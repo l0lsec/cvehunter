@@ -1,0 +1,46 @@
+<div {% if is_active %}hx-get="/dashboard/partials/run-progress/{{ run.cve_id }}"
+     hx-trigger="load delay:2s"
+     hx-swap="outerHTML"{% endif %}>
+  <header>
+    <strong>Live Progress</strong>
+    {% if current_stage %}
+      <span class="stage-pill stage-active">{{ current_stage }}</span>
+    {% elif is_active %}
+      <span class="stage-pill stage-pending">waiting&hellip;</span>
+    {% endif %}
+  </header>
+
+  <div class="stage-stepper">
+    {% for step in steps %}
+      <span class="stage-pill stage-{{ step.state }}"
+            {% if step.state == "active" %}aria-busy="true"{% endif %}>
+        {{ step.name }}
+      </span>
+      {% if not loop.last %}<span class="stage-arrow">&rarr;</span>{% endif %}
+    {% endfor %}
+  </div>
+
+  <div class="detail-grid" style="margin-top:1rem">
+    <div>
+      <small><strong>Cost so far:</strong> ${{ "%.3f" | format(cost) }}</small><br />
+      {% if researcher_attempts is not none %}
+        <small><strong>Researcher attempts:</strong> {{ researcher_attempts }}</small><br />
+      {% endif %}
+      {% if exploit_attempts is not none %}
+        <small><strong>Exploit attempts:</strong> {{ exploit_attempts }}</small>
+      {% endif %}
+    </div>
+    <div>
+      {% if recent_errors %}
+      <details>
+        <summary><small>{{ recent_errors | length }} recent error(s)</small></summary>
+        <ul>
+          {% for err in recent_errors %}
+          <li><small class="mono">{{ err }}</small></li>
+          {% endfor %}
+        </ul>
+      </details>
+      {% endif %}
+    </div>
+  </div>
+</div>

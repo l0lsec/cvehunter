@@ -11,14 +11,36 @@
   </p>
 </hgroup>
 
-{% if run.status in ("running", "resuming") %}
-<div hx-get="/dashboard/partials/run-status/{{ run.cve_id }}"
-     hx-trigger="every 3s"
-     hx-swap="outerHTML">
-  <article aria-busy="true">
-    <p>Pipeline is running&hellip; This page will update automatically.</p>
-  </article>
+{% if run.status in ("error", "cancelled", "judged_partial", "completed", "rejected_by_human", "approved_by_human") %}
+<div style="display:flex;gap:.5rem;margin-bottom:1rem">
+  <button hx-post="/dashboard/actions/retry/{{ run.cve_id }}"
+          hx-swap="none"
+          hx-on::after-request="window.location.reload()">Retry</button>
+  <button class="secondary outline"
+          hx-post="/dashboard/actions/resume/{{ run.cve_id }}"
+          hx-swap="none"
+          hx-on::after-request="window.location.reload()"
+          title="Resume from last checkpoint">Resume</button>
 </div>
+{% endif %}
+
+{% if run.status in ("running", "resuming", "cancelling") %}
+<article>
+  <div style="display:flex;justify-content:flex-end;margin-bottom:.5rem">
+    <button class="secondary outline"
+            hx-post="/dashboard/actions/cancel/{{ run.cve_id }}"
+            hx-swap="none"
+            hx-confirm="Cancel {{ run.cve_id }}?"
+            {% if run.status == "cancelling" %}disabled aria-busy="true"{% endif %}>
+      {% if run.status == "cancelling" %}Cancelling&hellip;{% else %}Cancel{% endif %}
+    </button>
+  </div>
+  <div hx-get="/dashboard/partials/run-progress/{{ run.cve_id }}"
+       hx-trigger="load, every 2s"
+       hx-swap="innerHTML">
+    <p aria-busy="true">Loading live progress&hellip;</p>
+  </div>
+</article>
 {% elif run.status == "hitl_paused" %}
 <article>
   <header>Awaiting Human Review</header>

@@ -1,11 +1,22 @@
 <tr id="run-{{ run.cve_id }}"
-    {% if run.status == "running" %}
+    {% if run.status in ("running", "resuming", "cancelling") %}
     hx-get="/dashboard/partials/run-status/{{ run.cve_id }}"
     hx-trigger="every 3s"
     hx-swap="outerHTML"
     {% endif %}>
   <td><a href="/dashboard/{{ run.cve_id }}" class="mono">{{ run.cve_id }}</a></td>
   <td class="status-{{ run.status }}">{{ run.status | upper }}</td>
+  <td>
+    {% if run.status in ("running", "resuming", "cancelling") and run.current_stage %}
+      <span class="stage-pill stage-active">{{ run.current_stage }}</span>
+      {% if run.cost_usd_live %}<small class="mono">&middot; ${{ "%.3f" | format(run.cost_usd_live) }}</small>{% endif %}
+    {% elif run.stages_completed %}
+      <small class="mono">{{ run.stages_completed | length }}/6</small>
+      {% if run.cost_usd_live %}<small class="mono">&middot; ${{ "%.3f" | format(run.cost_usd_live) }}</small>{% endif %}
+    {% else %}
+      &mdash;
+    {% endif %}
+  </td>
   <td>
     {% if run.exploitability_score is not none %}
       {% if run.exploitability_score < 4.0 %}
@@ -21,4 +32,24 @@
   </td>
   <td>{{ run.started_at[:19] if run.started_at else "&mdash;" }}</td>
   <td>{{ (run.summary[:80] + "...") if run.summary and run.summary | length > 80 else (run.summary or "&mdash;") }}</td>
+  <td class="row-actions">
+    {% if run.status in ("running", "resuming") %}
+      <button class="secondary outline"
+              hx-post="/dashboard/actions/cancel/{{ run.cve_id }}"
+              hx-target="#run-{{ run.cve_id }}"
+              hx-swap="outerHTML"
+              hx-confirm="Cancel {{ run.cve_id }}?">Cancel</button>
+    {% elif run.status == "cancelling" %}
+      <button class="secondary outline" disabled aria-busy="true">Cancelling&hellip;</button>
+    {% elif run.status in ("error", "cancelled", "judged_partial", "completed", "rejected_by_human", "approved_by_human") %}
+      <button hx-post="/dashboard/actions/retry/{{ run.cve_id }}"
+              hx-target="#run-{{ run.cve_id }}"
+              hx-swap="outerHTML">Retry</button>
+      <button class="secondary outline"
+              hx-post="/dashboard/actions/resume/{{ run.cve_id }}"
+              hx-target="#run-{{ run.cve_id }}"
+              hx-swap="outerHTML"
+              title="Resume from last checkpoint">Resume</button>
+    {% endif %}
+  </td>
 </tr>

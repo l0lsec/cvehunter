@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -9,16 +10,28 @@ import structlog
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 
+from cvehunter.api import task_registry
 from cvehunter.api.auth import require_api_key
-from cvehunter.api.database import create_run, get_run, has_running_run, list_runs, update_run
+from cvehunter.api.database import (
+    create_run,
+    get_run,
+    has_running_run,
+    list_runs,
+    reset_checkpoint,
+    update_run,
+)
 from cvehunter.api.errors import ErrorCode, ErrorResponse, HTTP_STATUS_MAP
 from cvehunter.config import settings
 from cvehunter.llm_status import LLMStatusReport, build_report
-from cvehunter.pipeline import resume_pipeline, run_pipeline
+from cvehunter.pipeline import checkpoint_db_path, resume_pipeline, run_pipeline
+from cvehunter.tools.docker_ops import cleanup_environment
 
 logger = structlog.get_logger(__name__)
 
 router = APIRouter()
+
+# Status values that represent an active or in-flight run.
+_ACTIVE_STATUSES = {"running", "resuming", "cancelling"}
 
 
 class RunRequest(BaseModel):
@@ -34,6 +47,9 @@ class RunStatus(BaseModel):
     completed_at: str | None = None
     exploitability_score: float | None = None
     summary: str | None = None
+    current_stage: str | None = None
+    stages_completed: list[str] | None = None
+    cost_usd_live: float | None = None
 
 
 class RunDetail(RunStatus):
@@ -48,6 +64,18 @@ def _raise(code: ErrorCode, detail: str) -> None:
     )
 
 
+def _parse_stages(raw: Any) -> list[str] | None:
+    if not raw:
+        return None
+    if isinstance(raw, list):
+        return [str(x) for x in raw]
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    return [str(x) for x in parsed] if isinstance(parsed, list) else None
+
+
 def _row_to_status(row: dict[str, Any]) -> RunStatus:
     return RunStatus(
         id=row.get("id"),
@@ -58,6 +86,9 @@ def _row_to_status(row: dict[str, Any]) -> RunStatus:
         completed_at=row.get("completed_at"),
         exploitability_score=row.get("exploitability_score"),
         summary=row.get("summary"),
+        current_stage=row.get("current_stage"),
+        stages_completed=_parse_stages(row.get("stages_completed")),
+        cost_usd_live=row.get("cost_usd_live"),
     )
 
 
@@ -70,12 +101,67 @@ async def start_run(request: RunRequest, background_tasks: BackgroundTasks) -> R
         _raise(ErrorCode.VALIDATION_ERROR, str(e))
 
     cve_id = request.cve_id.upper()
-    if await has_running_run(cve_id):
+    if await has_running_run(cve_id) or task_registry.is_running(cve_id):
         _raise(ErrorCode.CVE_ALREADY_RUNNING, f"{cve_id} is already being processed")
 
     row = await create_run(cve_id)
     background_tasks.add_task(_execute_run, cve_id)
     return _row_to_status(row)
+
+
+@router.post(
+    "/run/{cve_id}/cancel",
+    response_model=RunStatus,
+    dependencies=[Depends(require_api_key)],
+)
+async def cancel_run(cve_id: str) -> RunStatus:
+    """Cancel an in-flight run by cancelling its asyncio task."""
+    cve_id = cve_id.upper()
+    row = await get_run(cve_id)
+    if row is None:
+        _raise(ErrorCode.RUN_NOT_FOUND, f"No run found for {cve_id}")
+
+    task = task_registry.get(cve_id)
+    if task is None or task.done():
+        _raise(
+            ErrorCode.RUN_NOT_RUNNING,
+            f"{cve_id} has no in-flight task in this process",
+        )
+
+    await update_run(cve_id, status="cancelling")
+    task.cancel()
+    row = await get_run(cve_id)
+    return _row_to_status(row)
+
+
+@router.post(
+    "/run/{cve_id}/retry",
+    response_model=RunStatus,
+    dependencies=[Depends(require_api_key)],
+)
+async def retry_run(cve_id: str, background_tasks: BackgroundTasks) -> RunStatus:
+    """Start a fresh pipeline run for a CVE that is not currently running."""
+    try:
+        settings.validate_keys()
+    except ValueError as e:
+        _raise(ErrorCode.VALIDATION_ERROR, str(e))
+
+    cve_id = cve_id.upper()
+    row = await get_run(cve_id)
+    if row is None:
+        _raise(ErrorCode.RUN_NOT_FOUND, f"No run found for {cve_id}")
+
+    status = row.get("status", "")
+    if status in _ACTIVE_STATUSES or task_registry.is_running(cve_id):
+        _raise(
+            ErrorCode.RUN_NOT_RETRYABLE,
+            f"{cve_id} is currently {status}; cancel it before retrying",
+        )
+
+    await reset_checkpoint(checkpoint_db_path(), cve_id)
+    new_row = await create_run(cve_id)
+    background_tasks.add_task(_execute_run, cve_id)
+    return _row_to_status(new_row)
 
 
 @router.get("/run/{cve_id}", response_model=RunDetail)
@@ -102,6 +188,9 @@ async def get_run_status(cve_id: str) -> RunDetail:
         completed_at=row.get("completed_at"),
         exploitability_score=row.get("exploitability_score"),
         summary=row.get("summary"),
+        current_stage=row.get("current_stage"),
+        stages_completed=_parse_stages(row.get("stages_completed")),
+        cost_usd_live=row.get("cost_usd_live"),
         full_result=full_result,
     )
 
@@ -166,9 +255,11 @@ async def hitl_respond(cve_id: str, request: HITLRequest, background_tasks: Back
 
 
 async def _execute_resume(cve_id: str, human_response: dict[str, Any] | None) -> None:
-    """Background task to resume a pipeline."""
+    """Background task to resume a pipeline from its last checkpoint."""
+    task = asyncio.create_task(resume_pipeline(cve_id, human_response=human_response))
+    task_registry.register(cve_id, task)
     try:
-        result = await resume_pipeline(cve_id, human_response=human_response)
+        result = await task
         judgement = result.get("judgement")
         await update_run(
             cve_id,
@@ -176,6 +267,19 @@ async def _execute_resume(cve_id: str, human_response: dict[str, Any] | None) ->
             exploitability_score=judgement.exploitability_score if judgement else None,
             summary=judgement.summary if judgement else None,
             full_result_json=result,
+        )
+    except asyncio.CancelledError:
+        logger.info("pipeline_resume_cancelled", cve_id=cve_id)
+        project = f"cvehunter-{cve_id.lower().replace('-', '_')}"
+        try:
+            await cleanup_environment(project)
+            await cleanup_environment(f"{project}-patched")
+        except Exception:
+            logger.exception("cleanup_after_cancel_failed", cve_id=cve_id)
+        await update_run(
+            cve_id,
+            status="cancelled",
+            summary="Run cancelled by user",
         )
     except Exception as e:
         logger.exception("pipeline_resume_failed", cve_id=cve_id)
@@ -185,12 +289,22 @@ async def _execute_resume(cve_id: str, human_response: dict[str, Any] | None) ->
             error_code=ErrorCode.PIPELINE_FAILED.value,
             summary=str(e),
         )
+    finally:
+        task_registry.pop(cve_id)
 
 
 async def _execute_run(cve_id: str) -> None:
-    """Background task to execute the full pipeline."""
+    """Background task to execute the full pipeline.
+
+    Wraps ``run_pipeline`` in an ``asyncio.Task`` so the cancel endpoint can
+    interrupt it. Registers the task so the cancel handler can find it; on
+    ``CancelledError`` we tear down any Docker environments the run created
+    and mark the DB row as ``cancelled``.
+    """
+    task = asyncio.create_task(run_pipeline(cve_id))
+    task_registry.register(cve_id, task)
     try:
-        result = await run_pipeline(cve_id)
+        result = await task
         judgement = result.get("judgement")
         await update_run(
             cve_id,
@@ -198,6 +312,19 @@ async def _execute_run(cve_id: str) -> None:
             exploitability_score=judgement.exploitability_score if judgement else None,
             summary=judgement.summary if judgement else None,
             full_result_json=result,
+        )
+    except asyncio.CancelledError:
+        logger.info("pipeline_cancelled", cve_id=cve_id)
+        project = f"cvehunter-{cve_id.lower().replace('-', '_')}"
+        try:
+            await cleanup_environment(project)
+            await cleanup_environment(f"{project}-patched")
+        except Exception:
+            logger.exception("cleanup_after_cancel_failed", cve_id=cve_id)
+        await update_run(
+            cve_id,
+            status="cancelled",
+            summary="Run cancelled by user",
         )
     except Exception as e:
         logger.exception("pipeline_background_failed", cve_id=cve_id)
@@ -207,3 +334,5 @@ async def _execute_run(cve_id: str) -> None:
             error_code=ErrorCode.PIPELINE_FAILED.value,
             summary=str(e),
         )
+    finally:
+        task_registry.pop(cve_id)

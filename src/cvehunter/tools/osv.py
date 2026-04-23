@@ -27,17 +27,14 @@ async def fetch_osv(cve_id: str) -> dict:
     """
     async with httpx.AsyncClient(timeout=30) as client:
         try:
-            response = await client.post(
-                f"{OSV_API_BASE}/query",
-                json={"aliases": [cve_id]},
-            )
+            response = await client.get(f"{OSV_API_BASE}/vulns/{cve_id}")
+            if response.status_code == 404:
+                return tool_failure(f"No OSV record for {cve_id}")
             response.raise_for_status()
-            data = response.json()
+            vuln = response.json()
 
-            if not data.get("vulns"):
-                return tool_failure(f"No OSV results for {cve_id}")
-
-            vuln = data["vulns"][0]
+            if not vuln or not vuln.get("id"):
+                return tool_failure(f"No OSV record for {cve_id}")
 
             affected_packages = []
             fix_commits = []

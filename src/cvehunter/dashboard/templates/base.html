@@ -20,15 +20,63 @@
     .score-low    { background: var(--pico-ins-color); color: #fff; }
     .score-medium { background: #e67e22; color: #fff; }
     .score-high   { background: var(--pico-del-color); color: #fff; }
-    .status-running   { color: var(--pico-primary); }
-    .status-completed { color: var(--pico-ins-color); }
-    .status-error     { color: var(--pico-del-color); }
+    .status-running        { color: var(--pico-primary); }
+    .status-resuming       { color: var(--pico-primary); }
+    .status-cancelling     { color: var(--pico-muted-color); }
+    .status-cancelled      { color: var(--pico-muted-color); }
+    .status-completed      { color: var(--pico-ins-color); }
+    .status-approved_by_human { color: var(--pico-ins-color); }
+    .status-rejected_by_human { color: var(--pico-del-color); }
+    .status-judged_partial { color: #e67e22; }
+    .status-error          { color: var(--pico-del-color); }
     nav .brand { font-weight: 700; font-size: 1.15rem; }
     .mono { font-family: var(--pico-font-family-monospace); font-size: .88rem; }
     .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
     @media (max-width: 768px) { .detail-grid { grid-template-columns: 1fr; } }
     .htmx-indicator { opacity: 0; transition: opacity .2s ease-in; }
     .htmx-request .htmx-indicator, .htmx-request.htmx-indicator { opacity: 1; }
+    .stage-pill {
+      display: inline-block;
+      padding: .1rem .5rem;
+      border-radius: .35rem;
+      font-size: .78rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .02em;
+      border: 1px solid transparent;
+    }
+    .stage-pill.stage-done {
+      background: color-mix(in srgb, var(--pico-ins-color) 25%, transparent);
+      color: var(--pico-ins-color);
+      border-color: color-mix(in srgb, var(--pico-ins-color) 40%, transparent);
+    }
+    .stage-pill.stage-active {
+      background: color-mix(in srgb, var(--pico-primary) 25%, transparent);
+      color: var(--pico-primary);
+      border-color: color-mix(in srgb, var(--pico-primary) 60%, transparent);
+    }
+    .stage-pill.stage-pending {
+      background: transparent;
+      color: var(--pico-muted-color);
+      border-color: var(--pico-muted-border-color, currentColor);
+      opacity: .7;
+    }
+    .stage-stepper {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: .4rem;
+      margin-top: .75rem;
+    }
+    .stage-arrow { color: var(--pico-muted-color); font-size: .8rem; }
+    .row-actions { white-space: nowrap; }
+    .row-actions button {
+      padding: .2rem .6rem;
+      font-size: .78rem;
+      margin: 0 .15rem 0 0;
+      width: auto;
+      display: inline-block;
+    }
   </style>
 </head>
 <body>

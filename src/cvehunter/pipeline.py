@@ -25,6 +25,7 @@ from cvehunter.agents.exploiter import run_exploiter, should_retry_exploit
 from cvehunter.agents.judge import run_judge
 from cvehunter.agents.researcher import run_researcher, should_escalate_researcher
 from cvehunter.agents.researcher_swarm import run_researcher_swarm
+from cvehunter.api.database import update_run_progress
 from cvehunter.artifacts import save_artifacts
 from cvehunter.config import settings
 from cvehunter.cost_tracker import load_monthly_spend, save_monthly_spend
@@ -47,6 +48,60 @@ def _should_continue_after_builder(state: dict[str, Any]) -> str:
     if state.get("status") in ("environment_failed", "cost_limit_exceeded"):
         return "skip_to_judge"
     return "continue"
+
+
+# ── Progress tracking ──
+
+
+# Stages whose start/end is reflected in the dashboard stage stepper. Kept in
+# pipeline order so the UI can display "X/N stages complete" without guessing.
+CANONICAL_STAGES: tuple[str, ...] = (
+    "collector",
+    "researcher",
+    "builder",
+    "exploiter",
+    "judge",
+    "cleanup",
+)
+
+
+def _with_progress(stage: str, fn):
+    """Wrap a LangGraph node to record stage progress in the runs DB.
+
+    Before the node runs we stamp ``current_stage``; after it completes we
+    append the stage to ``stages_completed`` and update the live cost counter.
+    Errors from the progress updates themselves are swallowed so they can't
+    break the pipeline.
+    """
+
+    async def wrapped(state: dict[str, Any]) -> dict[str, Any]:
+        cve_id = state.get("cve_id")
+        if cve_id:
+            try:
+                await update_run_progress(cve_id, current_stage=stage)
+            except Exception:
+                logger.exception("progress_update_failed", stage=stage, phase="enter")
+
+        result = await fn(state)
+
+        if cve_id:
+            merged_cost = state.get("total_cost_usd", 0.0)
+            if isinstance(result, dict) and "total_cost_usd" in result:
+                merged_cost = result["total_cost_usd"]
+            try:
+                await update_run_progress(
+                    cve_id,
+                    clear_current_stage=True,
+                    cost_usd_live=float(merged_cost or 0.0),
+                    append_completed=stage,
+                )
+            except Exception:
+                logger.exception("progress_update_failed", stage=stage, phase="exit")
+
+        return result
+
+    wrapped.__name__ = f"{stage}_progress"
+    return wrapped
 
 
 # ── Helper nodes ──
@@ -123,14 +178,17 @@ def build_pipeline() -> StateGraph:
 
     researcher_fn = _get_researcher_fn()
 
-    workflow.add_node("collector", run_collector)
-    workflow.add_node("researcher", researcher_fn)
-    workflow.add_node("researcher_escalated", _run_researcher_escalated)
-    workflow.add_node("builder", run_builder)
-    workflow.add_node("exploiter", run_exploiter)
-    workflow.add_node("judge", run_judge)
+    workflow.add_node("collector", _with_progress("collector", run_collector))
+    workflow.add_node("researcher", _with_progress("researcher", researcher_fn))
+    workflow.add_node(
+        "researcher_escalated",
+        _with_progress("researcher", _run_researcher_escalated),
+    )
+    workflow.add_node("builder", _with_progress("builder", run_builder))
+    workflow.add_node("exploiter", _with_progress("exploiter", run_exploiter))
+    workflow.add_node("judge", _with_progress("judge", run_judge))
     workflow.add_node("hitl_gate", _hitl_gate_node)
-    workflow.add_node("cleanup", _cleanup_node)
+    workflow.add_node("cleanup", _with_progress("cleanup", _cleanup_node))
 
     workflow.set_entry_point("collector")
 
@@ -200,6 +258,11 @@ def build_pipeline() -> StateGraph:
 def _checkpoint_db_path() -> str:
     settings.artifact_dir.mkdir(parents=True, exist_ok=True)
     return str(settings.artifact_dir / "checkpoints.db")
+
+
+def checkpoint_db_path() -> str:
+    """Public accessor so the API/dashboard layers can inspect / reset checkpoints."""
+    return _checkpoint_db_path()
 
 
 async def run_pipeline(cve_id: str) -> dict[str, Any]:
