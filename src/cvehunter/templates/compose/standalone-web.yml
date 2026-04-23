@@ -1,0 +1,15 @@
+# Template: Standalone web application (no database)
+
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:${APP_PORT:-80}"
+    networks:
+      - vuln-net
+
+networks:
+  vuln-net:
+    internal: true

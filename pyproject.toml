@@ -1,0 +1,48 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "moak-lite"
+version = "0.1.0"
+description = "Autonomous multi-agent CVE exploitation pipeline inspired by MOAK"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+dependencies = [
+    "langgraph",
+    "langchain-anthropic",
+    "langchain-openai",
+    "langchain-community",
+    "langchain-core",
+    "pydantic>=2.0",
+    "docker",
+    "nvdlib",
+    "httpx",
+    "fastapi",
+    "uvicorn[standard]",
+    "python-dotenv",
+    "rich",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "ruff",
+    "mypy",
+]
+
+[project.scripts]
+moak = "moak.cli:main"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true

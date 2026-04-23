@@ -1,0 +1,45 @@
+{
+  "description": "Benchmark CVEs for testing the MOAK-Lite pipeline. These are well-known KEVs with public information.",
+  "cves": [
+    {
+      "cve_id": "CVE-2021-44228",
+      "name": "Log4Shell",
+      "language": "java",
+      "type": "rce",
+      "difficulty": "easy",
+      "notes": "Apache Log4j JNDI injection. Trivially exploitable."
+    },
+    {
+      "cve_id": "CVE-2021-41773",
+      "name": "Apache Path Traversal",
+      "language": "c",
+      "type": "path_traversal",
+      "difficulty": "easy",
+      "notes": "Apache HTTP Server 2.4.49 path traversal and RCE."
+    },
+    {
+      "cve_id": "CVE-2023-44487",
+      "name": "HTTP/2 Rapid Reset",
+      "language": "c",
+      "type": "dos",
+      "difficulty": "medium",
+      "notes": "HTTP/2 protocol vulnerability affecting multiple servers."
+    },
+    {
+      "cve_id": "CVE-2023-34362",
+      "name": "MOVEit SQLi",
+      "language": "csharp",
+      "type": "sqli",
+      "difficulty": "medium",
+      "notes": "MOVEit Transfer SQL injection leading to RCE."
+    },
+    {
+      "cve_id": "CVE-2024-3094",
+      "name": "XZ Utils Backdoor",
+      "language": "c",
+      "type": "backdoor",
+      "difficulty": "hard",
+      "notes": "Supply chain backdoor in XZ Utils. Complex exploitation chain."
+    }
+  ]
+}

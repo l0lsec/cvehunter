@@ -1,0 +1,35 @@
+# Template: Web application with a database backend
+# Replace placeholders with actual values
+
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:${APP_PORT:-80}"
+    environment:
+      - DATABASE_URL=postgresql://app:app@db:5432/appdb
+    networks:
+      - vuln-net
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: appdb
+    networks:
+      - vuln-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+networks:
+  vuln-net:
+    internal: true  # No internet access
