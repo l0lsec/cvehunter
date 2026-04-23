@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
+from typing import TypedDict
 
 from pydantic import BaseModel, Field
 
@@ -81,7 +82,9 @@ class EnvironmentSpec(BaseModel):
     network_name: str
     services: list[str] = Field(default_factory=list)
     health_check_passed: bool = False
+    patched_network_name: str = ""
     credentials: dict[str, str] = Field(default_factory=dict)
+    errors: list[str] = Field(default_factory=list)
 
 
 # ── Exploiter Output ──
@@ -142,7 +145,7 @@ class JudgementReport(BaseModel):
 
 
 class PipelineState(BaseModel):
-    """Full state passed through the LangGraph pipeline."""
+    """Full state passed through the LangGraph pipeline (for serialization/API use)."""
 
     cve_id: str
     cve_package: CVEPackage | None = None
@@ -153,3 +156,20 @@ class PipelineState(BaseModel):
     total_cost_usd: float = 0.0
     errors: list[str] = Field(default_factory=list)
     status: str = "pending"
+
+
+class GraphState(TypedDict, total=False):
+    """Typed state for the LangGraph StateGraph (covers all runtime keys)."""
+
+    cve_id: str
+    cve_package: CVEPackage | None
+    exploit_recipe: ExploitRecipe | None
+    environment: EnvironmentSpec | None
+    exploit_result: ExploitResult | None
+    judgement: JudgementReport | None
+    total_cost_usd: float
+    errors: list[str]
+    status: str
+    researcher_attempts: int
+    researcher_escalated: bool
+    researcher_needs_escalation: bool

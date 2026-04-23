@@ -1,5 +1,5 @@
 {
-  "description": "Benchmark CVEs for testing the MOAK-Lite pipeline. These are well-known KEVs with public information.",
+  "description": "Benchmark CVEs for testing the CVEHunter pipeline. These are well-known KEVs with public information.",
   "cves": [
     {
       "cve_id": "CVE-2021-44228",

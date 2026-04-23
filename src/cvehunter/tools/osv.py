@@ -10,6 +10,8 @@ from __future__ import annotations
 import httpx
 from langchain_core.tools import tool
 
+from cvehunter.tools import tool_failure, tool_success
+
 OSV_API_BASE = "https://api.osv.dev/v1"
 
 
@@ -33,7 +35,7 @@ async def fetch_osv(cve_id: str) -> dict:
             data = response.json()
 
             if not data.get("vulns"):
-                return {"error": f"No OSV results for {cve_id}"}
+                return tool_failure(f"No OSV results for {cve_id}")
 
             vuln = data["vulns"][0]
 
@@ -56,7 +58,7 @@ async def fetch_osv(cve_id: str) -> dict:
                                     "commit": event["fixed"],
                                 })
 
-            return {
+            return tool_success({
                 "osv_id": vuln.get("id", ""),
                 "summary": vuln.get("summary", ""),
                 "details": vuln.get("details", "")[:2000],
@@ -66,9 +68,9 @@ async def fetch_osv(cve_id: str) -> dict:
                     {"type": ref.get("type", ""), "url": ref.get("url", "")}
                     for ref in vuln.get("references", [])
                 ],
-            }
+            })
 
         except httpx.HTTPStatusError as e:
-            return {"error": f"OSV API HTTP error: {e.response.status_code}"}
+            return tool_failure(f"OSV API HTTP error: {e.response.status_code}")
         except Exception as e:
-            return {"error": f"OSV API error: {str(e)}"}
+            return tool_failure(f"OSV API error: {str(e)}")

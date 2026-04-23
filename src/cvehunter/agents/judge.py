@@ -9,10 +9,14 @@ from __future__ import annotations
 
 from typing import Any
 
+import structlog
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from moak.llm_router import get_model
-from moak.schemas import (
+logger = structlog.get_logger(__name__)
+
+from cvehunter.config import ModelTier
+from cvehunter.llm_router import extract_cost, get_model
+from cvehunter.schemas import (
     CVEPackage,
     EnvironmentSpec,
     ExploitRecipe,
@@ -64,10 +68,38 @@ Be skeptical. Look for shortcuts and false positives.
 
 async def run_judge(state: dict[str, Any]) -> dict[str, Any]:
     """Execute the Judge agent node."""
-    cve_package: CVEPackage = state["cve_package"]
-    recipe: ExploitRecipe = state["exploit_recipe"]
-    env: EnvironmentSpec = state["environment"]
-    result: ExploitResult = state["exploit_result"]
+    cve_package: CVEPackage | None = state.get("cve_package")
+    recipe: ExploitRecipe | None = state.get("exploit_recipe")
+    env: EnvironmentSpec | None = state.get("environment")
+    result: ExploitResult | None = state.get("exploit_result")
+
+    missing = [
+        name
+        for name, val in [
+            ("cve_package", cve_package),
+            ("exploit_recipe", recipe),
+            ("environment", env),
+            ("exploit_result", result),
+        ]
+        if val is None
+    ]
+
+    run_cost = state.get("total_cost_usd", 0.0)
+    tier = ModelTier.CHEAP
+
+    if missing:
+        return {
+            "judgement": JudgementReport(
+                cve_id=state.get("cve_id", "UNKNOWN"),
+                exploitability_score=0.0,
+                summary=f"Incomplete pipeline: missing {', '.join(missing)}",
+                full_analysis=(
+                    f"Cannot judge -- upstream agents failed to produce: {', '.join(missing)}"
+                ),
+            ),
+            "status": "judged_partial",
+            "total_cost_usd": run_cost,
+        }
 
     llm = get_model("judge")
 
@@ -120,11 +152,13 @@ async def run_judge(state: dict[str, Any]) -> dict[str, Any]:
         HumanMessage(content=context),
     ]
 
-    structured_llm = llm.with_structured_output(JudgementReport)
+    structured_llm = llm.with_structured_output(JudgementReport, method="function_calling")
     report = await structured_llm.ainvoke(messages)
+    run_cost += extract_cost(report, tier) if hasattr(report, "usage_metadata") else 0.0
     report.cve_id = cve_package.cve_id
 
     return {
         "judgement": report,
         "status": "judged",
+        "total_cost_usd": run_cost,
     }

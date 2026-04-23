@@ -12,7 +12,7 @@ from typing import Any
 
 import docker
 
-from moak.config import settings
+from cvehunter.config import settings
 
 
 def _get_client() -> docker.DockerClient:

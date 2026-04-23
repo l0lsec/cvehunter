@@ -1,1 +1,1 @@
-"""FastAPI application for the MOAK-Lite dashboard."""
+"""FastAPI application for the CVEHunter dashboard."""

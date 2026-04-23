@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{% block title %}CVEHunter{% endblock %}</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css" />
+  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+  <style>
+    :root {
+      --pico-font-size: 93.75%;
+    }
+    .score-badge {
+      display: inline-block;
+      padding: .15rem .55rem;
+      border-radius: .35rem;
+      font-weight: 600;
+      font-size: .85rem;
+    }
+    .score-low    { background: var(--pico-ins-color); color: #fff; }
+    .score-medium { background: #e67e22; color: #fff; }
+    .score-high   { background: var(--pico-del-color); color: #fff; }
+    .status-running   { color: var(--pico-primary); }
+    .status-completed { color: var(--pico-ins-color); }
+    .status-error     { color: var(--pico-del-color); }
+    nav .brand { font-weight: 700; font-size: 1.15rem; }
+    .mono { font-family: var(--pico-font-family-monospace); font-size: .88rem; }
+    .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    @media (max-width: 768px) { .detail-grid { grid-template-columns: 1fr; } }
+    .htmx-indicator { opacity: 0; transition: opacity .2s ease-in; }
+    .htmx-request .htmx-indicator, .htmx-request.htmx-indicator { opacity: 1; }
+  </style>
+</head>
+<body>
+  <nav class="container-fluid">
+    <ul>
+      <li><a href="/dashboard/" class="brand">CVEHunter</a></li>
+    </ul>
+    <ul>
+      <li><a href="/dashboard/">Dashboard</a></li>
+      <li><a href="/dashboard/llms">LLMs</a></li>
+      <li><a href="/health">API Health</a></li>
+    </ul>
+  </nav>
+  <main class="container">
+    {% block content %}{% endblock %}
+  </main>
+  <footer class="container">
+    <small>CVEHunter &mdash; Autonomous CVE Exploitation Pipeline</small>
+  </footer>
+  <script type="module">
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+    mermaid.initialize({ startOnLoad: true, theme: 'dark' });
+  </script>
+</body>
+</html>

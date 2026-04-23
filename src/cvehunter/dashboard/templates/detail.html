@@ -1,0 +1,158 @@
+{% extends "base.html" %}
+{% block title %}{{ run.cve_id }} &mdash; CVEHunter{% endblock %}
+
+{% block content %}
+<hgroup>
+  <h2 class="mono">{{ run.cve_id }}</h2>
+  <p>
+    Status:
+    <strong class="status-{{ run.status }}">{{ run.status | upper }}</strong>
+    {% if run.started_at %}&mdash; started {{ run.started_at }}{% endif %}
+  </p>
+</hgroup>
+
+{% if run.status in ("running", "resuming") %}
+<div hx-get="/dashboard/partials/run-status/{{ run.cve_id }}"
+     hx-trigger="every 3s"
+     hx-swap="outerHTML">
+  <article aria-busy="true">
+    <p>Pipeline is running&hellip; This page will update automatically.</p>
+  </article>
+</div>
+{% elif run.status == "hitl_paused" %}
+<article>
+  <header>Awaiting Human Review</header>
+  <p>The Judge flagged this run for human-in-the-loop review before finalizing.</p>
+  <div style="display:flex;gap:1rem;margin-top:1rem">
+    <form method="post" action="/api/v1/hitl/{{ run.cve_id }}" id="hitl-form">
+      <input type="hidden" name="action" id="hitl-action" value="approve" />
+      <input type="hidden" name="notes" id="hitl-notes" value="" />
+    </form>
+    <button class="outline" onclick="document.getElementById('hitl-action').value='approve';document.getElementById('hitl-form').submit()">
+      Approve
+    </button>
+    <button class="outline secondary" onclick="var n=prompt('Rejection reason:','');if(n!==null){document.getElementById('hitl-action').value='reject';document.getElementById('hitl-notes').value=n;document.getElementById('hitl-form').submit();}">
+      Reject
+    </button>
+  </div>
+</article>
+{% else %}
+
+<div class="detail-grid">
+  <article>
+    <header>Exploitability Score</header>
+    {% if run.exploitability_score is not none %}
+      {% if run.exploitability_score < 4.0 %}
+        <span class="score-badge score-low">{{ "%.1f" | format(run.exploitability_score) }} / 10</span>
+      {% elif run.exploitability_score < 7.0 %}
+        <span class="score-badge score-medium">{{ "%.1f" | format(run.exploitability_score) }} / 10</span>
+      {% else %}
+        <span class="score-badge score-high">{{ "%.1f" | format(run.exploitability_score) }} / 10</span>
+      {% endif %}
+    {% else %}
+      <span>N/A</span>
+    {% endif %}
+  </article>
+
+  <article>
+    <header>Timing</header>
+    <p>
+      <strong>Started:</strong> {{ run.started_at or "N/A" }}<br />
+      <strong>Completed:</strong> {{ run.completed_at or "N/A" }}
+    </p>
+  </article>
+</div>
+
+{% if run.summary %}
+<article>
+  <header>Summary</header>
+  <p>{{ run.summary }}</p>
+</article>
+{% endif %}
+
+{% if run.error_code %}
+<article>
+  <header>Error</header>
+  <p><strong>Code:</strong> <code>{{ run.error_code }}</code></p>
+  {% if run.summary %}<p>{{ run.summary }}</p>{% endif %}
+</article>
+{% endif %}
+
+{% if mermaid_code %}
+<article>
+  <header>Primitives Graph</header>
+  <pre class="mermaid">
+{{ mermaid_code }}
+  </pre>
+  {% if full_result and full_result.exploit_recipe %}
+  <details>
+    <summary>Exploitation Steps</summary>
+    <ol>
+      {% for step in full_result.exploit_recipe.exploitation_steps %}
+      <li>{{ step }}</li>
+      {% endfor %}
+    </ol>
+  </details>
+  {% endif %}
+</article>
+{% endif %}
+
+{% if full_result %}
+<article>
+  <header>Judgement Report</header>
+  {% if full_result.judgement %}
+  <div class="detail-grid">
+    <div>
+      <p><strong>Exploit Genuine:</strong> {{ full_result.judgement.exploit_genuine }}</p>
+      <p><strong>Environment Realistic:</strong> {{ full_result.judgement.environment_realistic }}</p>
+      <p><strong>No External PoCs:</strong> {{ full_result.judgement.no_external_pocs_used }}</p>
+    </div>
+    <div>
+      <p><strong>HITL Level:</strong> {{ full_result.judgement.hitl_level }}</p>
+      <p><strong>Shortcut Detected:</strong> {{ full_result.judgement.shortcut_detected }}</p>
+    </div>
+  </div>
+  {% if full_result.judgement.full_analysis %}
+  <details>
+    <summary>Full Analysis</summary>
+    <pre>{{ full_result.judgement.full_analysis }}</pre>
+  </details>
+  {% endif %}
+  {% else %}
+  <p>No judgement data available.</p>
+  {% endif %}
+</article>
+
+{% if full_result.exploit_result %}
+<article>
+  <header>Exploit Result</header>
+  <p>
+    <strong>Success:</strong> {{ full_result.exploit_result.success }}<br />
+    <strong>Total Attempts:</strong> {{ full_result.exploit_result.total_attempts }}<br />
+    <strong>Fails on Patched:</strong> {{ full_result.exploit_result.fails_on_patched }}
+  </p>
+  {% if full_result.exploit_result.final_exploit_code %}
+  <details>
+    <summary>Exploit Code</summary>
+    <pre><code>{{ full_result.exploit_result.final_exploit_code }}</code></pre>
+  </details>
+  {% endif %}
+</article>
+{% endif %}
+
+{% if full_result.errors %}
+<article>
+  <header>Pipeline Errors</header>
+  <ul>
+    {% for err in full_result.errors %}
+    <li>{{ err }}</li>
+    {% endfor %}
+  </ul>
+</article>
+{% endif %}
+{% endif %}
+
+{% endif %}
+
+<p><a href="/dashboard/">&larr; Back to Dashboard</a></p>
+{% endblock %}

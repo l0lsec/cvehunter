@@ -9,11 +9,15 @@ from __future__ import annotations
 
 from typing import Any
 
+import structlog
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from moak.config import settings
-from moak.llm_router import get_model
-from moak.schemas import CVEPackage, ExploitRecipe
+logger = structlog.get_logger(__name__)
+
+from cvehunter.config import settings
+from cvehunter.cost_tracker import check_cost_limits
+from cvehunter.llm_router import extract_cost, get_model, get_tier_for_agent
+from cvehunter.schemas import CVEPackage, ExploitRecipe
 
 RESEARCHER_SYSTEM_PROMPT = """\
 You are an expert vulnerability researcher. Given detailed CVE information including
@@ -46,9 +50,20 @@ Do NOT generate actual exploit code — only the strategy and steps.
 
 async def run_researcher(state: dict[str, Any]) -> dict[str, Any]:
     """Execute the Researcher agent node."""
+    cost_error = check_cost_limits(state.get("total_cost_usd", 0.0))
+    if cost_error:
+        return {
+            "errors": state.get("errors", []) + [cost_error],
+            "status": "cost_limit_exceeded",
+            "total_cost_usd": state.get("total_cost_usd", 0.0),
+        }
+
     cve_package: CVEPackage = state["cve_package"]
     escalate = state.get("researcher_escalated", False)
+    researcher_attempts = state.get("researcher_attempts", 0) + 1
 
+    run_cost = state.get("total_cost_usd", 0.0)
+    tier = get_tier_for_agent("researcher", escalate=escalate)
     llm = get_model("researcher", escalate=escalate)
 
     context = f"""## CVE: {cve_package.cve_id}
@@ -82,19 +97,24 @@ async def run_researcher(state: dict[str, Any]) -> dict[str, Any]:
         HumanMessage(content=context),
     ]
 
-    structured_llm = llm.with_structured_output(ExploitRecipe)
+    structured_llm = llm.with_structured_output(ExploitRecipe, method="function_calling")
     recipe = await structured_llm.ainvoke(messages)
+    run_cost += extract_cost(recipe, tier) if hasattr(recipe, "usage_metadata") else 0.0
 
     has_complete_chain = len(recipe.primitives_graph.complete_chains) > 0
 
     result: dict[str, Any] = {
         "exploit_recipe": recipe,
         "status": "researched",
+        "researcher_attempts": researcher_attempts,
+        "total_cost_usd": run_cost,
     }
 
-    # If no complete chain found and we haven't escalated yet, flag for escalation
     if not has_complete_chain and not escalate:
-        result["researcher_needs_escalation"] = True
+        if researcher_attempts >= settings.researcher_escalation_threshold:
+            result["researcher_needs_escalation"] = True
+        else:
+            result["researcher_needs_escalation"] = False
     else:
         result["researcher_needs_escalation"] = False
 
@@ -102,7 +122,10 @@ async def run_researcher(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def should_escalate_researcher(state: dict[str, Any]) -> str:
-    """LangGraph conditional edge: decide whether to escalate the Researcher to Opus."""
+    """LangGraph conditional edge: retry, escalate to Opus, or continue to Builder."""
     if state.get("researcher_needs_escalation") and not state.get("researcher_escalated"):
         return "escalate"
+    recipe = state.get("exploit_recipe")
+    if recipe and len(recipe.primitives_graph.complete_chains) == 0:
+        return "retry"
     return "continue"

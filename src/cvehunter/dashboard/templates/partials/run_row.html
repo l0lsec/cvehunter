@@ -1,0 +1,24 @@
+<tr id="run-{{ run.cve_id }}"
+    {% if run.status == "running" %}
+    hx-get="/dashboard/partials/run-status/{{ run.cve_id }}"
+    hx-trigger="every 3s"
+    hx-swap="outerHTML"
+    {% endif %}>
+  <td><a href="/dashboard/{{ run.cve_id }}" class="mono">{{ run.cve_id }}</a></td>
+  <td class="status-{{ run.status }}">{{ run.status | upper }}</td>
+  <td>
+    {% if run.exploitability_score is not none %}
+      {% if run.exploitability_score < 4.0 %}
+        <span class="score-badge score-low">{{ "%.1f" | format(run.exploitability_score) }}</span>
+      {% elif run.exploitability_score < 7.0 %}
+        <span class="score-badge score-medium">{{ "%.1f" | format(run.exploitability_score) }}</span>
+      {% else %}
+        <span class="score-badge score-high">{{ "%.1f" | format(run.exploitability_score) }}</span>
+      {% endif %}
+    {% else %}
+      &mdash;
+    {% endif %}
+  </td>
+  <td>{{ run.started_at[:19] if run.started_at else "&mdash;" }}</td>
+  <td>{{ (run.summary[:80] + "...") if run.summary and run.summary | length > 80 else (run.summary or "&mdash;") }}</td>
+</tr>

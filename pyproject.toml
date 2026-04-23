@@ -3,38 +3,55 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "moak-lite"
+name = "cvehunter"
 version = "0.1.0"
-description = "Autonomous multi-agent CVE exploitation pipeline inspired by MOAK"
+description = "Autonomous multi-agent CVE exploitation pipeline"
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
 dependencies = [
     "langgraph",
+    "langgraph-checkpoint-sqlite",
     "langchain-anthropic",
     "langchain-openai",
-    "langchain-community",
+    "langchain-google-genai",
     "langchain-core",
     "pydantic>=2.0",
     "docker",
     "nvdlib",
     "httpx",
+    "beautifulsoup4",
     "fastapi",
     "uvicorn[standard]",
     "python-dotenv",
     "rich",
+    "structlog",
+    "aiosqlite",
+    "jinja2",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest",
     "pytest-asyncio",
+    "pytest-mock",
     "ruff",
     "mypy",
 ]
+observability = [
+    "langsmith",
+]
 
 [project.scripts]
-moak = "moak.cli:main"
+cvehunter = "cvehunter.cli:main"
+cvehunter-benchmark = "cvehunter.benchmark:main"
+cvehunter-kev = "cvehunter.kev_harness:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cvehunter"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
 
 [tool.ruff]
 target-version = "py312"

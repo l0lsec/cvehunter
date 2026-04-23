@@ -9,7 +9,8 @@ from __future__ import annotations
 import httpx
 from langchain_core.tools import tool
 
-from moak.config import settings
+from cvehunter.config import settings
+from cvehunter.tools import tool_failure, tool_success
 
 GITHUB_API_BASE = "https://api.github.com"
 
@@ -51,12 +52,12 @@ async def search_github_commits(query: str) -> dict:
                     "date": item.get("commit", {}).get("author", {}).get("date", ""),
                 })
 
-            return {"commits": commits, "total_count": data.get("total_count", 0)}
+            return tool_success({"commits": commits, "total_count": data.get("total_count", 0)})
 
         except httpx.HTTPStatusError as e:
-            return {"error": f"GitHub API HTTP error: {e.response.status_code}"}
+            return tool_failure(f"GitHub API HTTP error: {e.response.status_code}")
         except Exception as e:
-            return {"error": f"GitHub API error: {str(e)}"}
+            return tool_failure(f"GitHub API error: {str(e)}")
 
 
 @tool
@@ -100,13 +101,13 @@ async def get_commit_diff(repo: str, sha: str) -> dict:
                 for f in commit_data.get("files", [])
             ]
 
-            return {
+            return tool_success({
                 "diff": diff_text[:10000],
                 "files_changed": files,
                 "commit_message": commit_data.get("commit", {}).get("message", ""),
-            }
+            })
 
         except httpx.HTTPStatusError as e:
-            return {"error": f"GitHub API HTTP error: {e.response.status_code}"}
+            return tool_failure(f"GitHub API HTTP error: {e.response.status_code}")
         except Exception as e:
-            return {"error": f"GitHub API error: {str(e)}"}
+            return tool_failure(f"GitHub API error: {str(e)}")

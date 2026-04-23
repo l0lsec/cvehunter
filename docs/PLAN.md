@@ -1,4 +1,4 @@
-# Building a MOAK-like Pipeline: Budget-Optimized Technical Plan
+# Building CVEHunter Pipeline: Budget-Optimized Technical Plan
 
 **Constraints:** Solo developer, $50-200/month, full CVE scope, cloud infrastructure.
 

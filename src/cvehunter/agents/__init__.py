@@ -1,1 +1,1 @@
-"""Agent implementations for the MOAK-Lite pipeline."""
+"""Agent implementations for the CVEHunter pipeline."""

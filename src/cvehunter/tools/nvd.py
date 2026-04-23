@@ -7,9 +7,12 @@ Docs: https://nvd.nist.gov/developers/vulnerabilities
 
 from __future__ import annotations
 
+import asyncio
+
 from langchain_core.tools import tool
 
-from moak.config import settings
+from cvehunter.config import settings
+from cvehunter.tools import tool_failure, tool_success
 
 
 @tool
@@ -25,9 +28,11 @@ async def fetch_cve(cve_id: str) -> dict:
     import nvdlib
 
     try:
-        results = nvdlib.searchCVE(cveId=cve_id, key=settings.nvd_api_key or None)
+        results = await asyncio.to_thread(
+            nvdlib.searchCVE, cveId=cve_id, key=settings.nvd_api_key or None
+        )
         if not results:
-            return {"error": f"No results found for {cve_id}"}
+            return tool_failure(f"No results found for {cve_id}")
 
         cve = results[0]
 
@@ -51,7 +56,7 @@ async def fetch_cve(cve_id: str) -> dict:
         if hasattr(cve, "cwe"):
             cwe_ids = [cve.cwe]
 
-        return {
+        return tool_success({
             "cve_id": cve_id,
             "description": descriptions[0] if descriptions else "",
             "cvss_v3_score": cvss_v3,
@@ -59,7 +64,7 @@ async def fetch_cve(cve_id: str) -> dict:
             "references": references,
             "published": str(cve.published) if hasattr(cve, "published") else None,
             "last_modified": str(cve.lastModified) if hasattr(cve, "lastModified") else None,
-        }
+        })
 
     except Exception as e:
-        return {"error": f"NVD API error: {str(e)}"}
+        return tool_failure(f"NVD API error: {str(e)}")

@@ -1,0 +1,22 @@
+{% if runs %}
+<figure>
+<table>
+  <thead>
+    <tr>
+      <th>CVE ID</th>
+      <th>Status</th>
+      <th>Score</th>
+      <th>Started</th>
+      <th>Summary</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for run in runs %}
+    {% include "partials/run_row.html" %}
+    {% endfor %}
+  </tbody>
+</table>
+</figure>
+{% else %}
+<p>No analysis runs yet. Submit a CVE above to get started.</p>
+{% endif %}

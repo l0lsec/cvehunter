@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block title %}LLMs &mdash; CVEHunter{% endblock %}
+
+{% block content %}
+<section>
+  <h2>LLMs &amp; Cost</h2>
+
+  {% set spend = report.spend %}
+  {% set cap = spend.monthly_cap_usd if spend.monthly_cap_usd > 0 else 1 %}
+  {% set used_pct = (spend.monthly_spend_usd / cap * 100) | round(1) %}
+  {% if used_pct > 100 %}{% set used_pct = 100 %}{% endif %}
+
+  <article>
+    <header>
+      <strong>Monthly spend &mdash; {{ spend.month }}</strong>
+    </header>
+    <progress value="{{ spend.monthly_spend_usd }}" max="{{ spend.monthly_cap_usd }}"></progress>
+    <div class="detail-grid">
+      <div>
+        <small>Spent</small>
+        <p class="mono">${{ "%.4f" | format(spend.monthly_spend_usd) }}</p>
+      </div>
+      <div>
+        <small>Monthly cap</small>
+        <p class="mono">${{ "%.2f" | format(spend.monthly_cap_usd) }}</p>
+      </div>
+      <div>
+        <small>Remaining this month</small>
+        <p class="mono">${{ "%.4f" | format(spend.monthly_remaining_usd) }}</p>
+      </div>
+      <div>
+        <small>Per-CVE cap</small>
+        <p class="mono">${{ "%.2f" | format(spend.per_cve_cap_usd) }}</p>
+      </div>
+    </div>
+    <footer>
+      <small>{{ used_pct }}% of monthly cap used</small>
+    </footer>
+  </article>
+</section>
+
+<section>
+  <h3>Models</h3>
+  <div class="detail-grid">
+    {% for m in report.models %}
+    <article>
+      <header>
+        <strong>{{ m.model_name }}</strong>
+        <br />
+        <small>
+          <span class="score-badge {% if m.tier == 'heavy' %}score-high{% elif m.tier == 'smart' %}score-medium{% else %}score-low{% endif %}">{{ m.tier }}</span>
+          &middot; {{ m.provider }}
+          &middot;
+          {% if m.active %}
+            <span class="status-completed">active</span>
+          {% else %}
+            <span class="status-error">inactive</span>
+          {% endif %}
+        </small>
+      </header>
+
+      <p>
+        <small>Agents: </small>
+        <span class="mono">
+          {% if m.assigned_agents %}{{ m.assigned_agents | join(', ') }}{% else %}&mdash;{% endif %}
+        </span>
+      </p>
+
+      <p>
+        <small>Cost per 1M tokens</small>
+        <br />
+        <span class="mono">
+          in ${{ "%.2f" | format(m.cost_per_1m_input) }}
+          / out ${{ "%.2f" | format(m.cost_per_1m_output) }}
+        </span>
+      </p>
+
+      <p>
+        <small>Balance</small>
+        <br />
+        {% if m.balance and m.balance.source == 'live' and m.balance.total is not none %}
+          <span class="mono">
+            ${{ "%.2f" | format(m.balance.total) }} {{ m.balance.currency or 'USD' }}
+          </span>
+          {% if m.balance.granted is not none or m.balance.topped_up is not none %}
+            <br />
+            <small class="mono">
+              {% if m.balance.granted is not none %}granted ${{ "%.2f" | format(m.balance.granted) }}{% endif %}
+              {% if m.balance.topped_up is not none %} &middot; topped-up ${{ "%.2f" | format(m.balance.topped_up) }}{% endif %}
+            </small>
+          {% endif %}
+        {% else %}
+          <span class="status-error">
+            {% if m.balance and m.balance.note %}{{ m.balance.note }}{% else %}dashboard only{% endif %}
+          </span>
+        {% endif %}
+      </p>
+
+      <footer>
+        <a href="{{ m.billing_url }}" target="_blank" rel="noopener">Billing dashboard &rarr;</a>
+      </footer>
+    </article>
+    {% endfor %}
+  </div>
+</section>
+
+<section>
+  <small>
+    Only DeepSeek exposes a public remaining-credit endpoint. For Anthropic,
+    OpenAI, and Google, use the provider's billing dashboard and rely on the
+    local monthly-spend tracker above.
+  </small>
+</section>
+{% endblock %}

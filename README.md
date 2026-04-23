@@ -1,8 +1,8 @@
-# MOAK-Lite
+# CVEHunter
 
-Autonomous multi-agent CVE exploitation pipeline inspired by [MOAK](https://moak.ai/).
+Autonomous multi-agent CVE exploitation pipeline.
 
-Given a CVE ID, MOAK-Lite automatically:
+Given a CVE ID, CVEHunter automatically:
 1. **Collects** vulnerability data and patch diffs from NVD, OSV.dev, and GitHub
 2. **Researches** the vulnerability to build an exploitation primitives graph and recipe
 3. **Builds** isolated Docker environments with flag insertion for testing
@@ -33,7 +33,7 @@ Estimated **$2-8 per CVE** for typical web-app vulnerabilities.
 
 ```bash
 # Clone and install
-cd ~/tools/moak-lite
+cd ~/tools/cvehunter
 pip install -e ".[dev]"
 
 # Configure API keys
@@ -41,23 +41,23 @@ cp .env.example .env
 # Edit .env with your API keys
 
 # Check configuration
-moak status
+cvehunter status
 
 # Run the pipeline for a CVE
-moak run CVE-2021-44228
+cvehunter run CVE-2021-44228
 
 # Run only the Collector
-moak collect CVE-2021-44228
+cvehunter collect CVE-2021-44228
 
 # Start the API server
-uvicorn moak.api.main:app --reload
+uvicorn cvehunter.api.main:app --reload
 ```
 
 ## Project Structure
 
 ```
-moak-lite/
-  src/moak/
+cvehunter/
+  src/cvehunter/
     config.py          # Settings, model tiers, cost limits
     llm_router.py      # Tiered model selection (DeepSeek → Sonnet → Opus)
     schemas.py         # Pydantic models for all agent I/O

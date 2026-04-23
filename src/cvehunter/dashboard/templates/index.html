@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Dashboard &mdash; CVEHunter{% endblock %}
+
+{% block content %}
+<section>
+  <h2>Submit CVE for Analysis</h2>
+  <form hx-post="/api/v1/run"
+        hx-headers='{"Content-Type": "application/json"}'
+        hx-target="#submit-result"
+        hx-swap="innerHTML"
+        hx-ext="json-enc"
+        hx-indicator="#submit-spinner">
+    <fieldset role="group">
+      <input type="text" name="cve_id" placeholder="CVE-2024-12345" required
+             pattern="CVE-\d{4}-\d{4,}" title="Format: CVE-YYYY-NNNNN" />
+      <button type="submit">
+        Analyze
+        <span id="submit-spinner" class="htmx-indicator" aria-busy="true"></span>
+      </button>
+    </fieldset>
+  </form>
+  <div id="submit-result"></div>
+  <script src="https://unpkg.com/htmx-ext-json-enc@2.0.1/json-enc.js"></script>
+</section>
+
+<section>
+  <h2>Analysis Runs</h2>
+  <div hx-get="/dashboard/partials/runs-table"
+       hx-trigger="load, every 5s"
+       hx-swap="innerHTML">
+    <p aria-busy="true">Loading runs&hellip;</p>
+  </div>
+</section>
+{% endblock %}
