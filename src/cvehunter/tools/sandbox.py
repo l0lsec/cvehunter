@@ -23,6 +23,7 @@ async def run_exploit(
     exploit_code: str,
     target_network: str,
     timeout_seconds: int = 60,
+    container_name: str = "",
 ) -> dict[str, Any]:
     """Execute exploit code in a sandboxed container.
 
@@ -33,6 +34,9 @@ async def run_exploit(
         exploit_code: Python script content to execute
         target_network: Docker network name to connect the exploit container to
         timeout_seconds: Maximum execution time before killing the container
+        container_name: Optional CVE-based name for the sandbox container
+            (e.g. ``cve-2021-44228-exploit-a3f2``). If empty, Docker assigns
+            a random name.
 
     Returns:
         stdout, stderr, and exit code from the exploit execution.
@@ -56,6 +60,7 @@ async def run_exploit(
                 read_only=True,
                 tmpfs={"/tmp": "size=100m"},
                 security_opt=["no-new-privileges"],
+                name=container_name or None,
             )
 
             try:
@@ -84,7 +89,9 @@ async def run_exploit(
 
         except docker.errors.ImageNotFound:
             client.images.pull("python:3.12-slim")
-            return await run_exploit(exploit_code, target_network, timeout_seconds)
+            return await run_exploit(
+                exploit_code, target_network, timeout_seconds, container_name
+            )
         except Exception as e:
             return {
                 "exit_code": -1,
@@ -97,10 +104,13 @@ async def run_against_patched(
     exploit_code: str,
     patched_network: str,
     timeout_seconds: int = 60,
+    container_name: str = "",
 ) -> dict[str, Any]:
     """Run the exploit against the patched environment (should fail).
 
     Same as run_exploit but against the patched version. A successful
     exploitation here means the exploit is not targeting the actual vulnerability.
     """
-    return await run_exploit(exploit_code, patched_network, timeout_seconds)
+    return await run_exploit(
+        exploit_code, patched_network, timeout_seconds, container_name
+    )

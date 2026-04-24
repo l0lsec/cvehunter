@@ -28,6 +28,7 @@ dependencies = [
     "structlog",
     "aiosqlite",
     "jinja2",
+    "pyyaml",
 ]
 
 [project.optional-dependencies]

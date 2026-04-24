@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import docker
+import yaml
 from langchain_core.tools import tool
 
 from cvehunter.config import settings
@@ -58,6 +59,29 @@ async def build_image(dockerfile_content: str, tag: str) -> dict:
         return tool_failure(f"Docker build failed: {str(e)}")
     except Exception as e:
         return tool_failure(f"Docker error: {str(e)}")
+
+
+def _inject_container_names(compose_yaml: str, name_prefix: str) -> str:
+    """Rewrite compose YAML so every service has an explicit CVE-based container_name.
+
+    Produces names like ``<name_prefix>-<service>`` (e.g. ``cve-2021-44228-web-a3f2``).
+    Returns the original YAML unchanged if parsing fails or there is no prefix.
+    """
+    if not name_prefix:
+        return compose_yaml
+    try:
+        doc = yaml.safe_load(compose_yaml)
+    except yaml.YAMLError:
+        return compose_yaml
+    if not isinstance(doc, dict):
+        return compose_yaml
+    services = doc.get("services")
+    if not isinstance(services, dict):
+        return compose_yaml
+    for svc_name, svc in services.items():
+        if isinstance(svc, dict):
+            svc["container_name"] = f"{name_prefix}-{svc_name}"
+    return yaml.safe_dump(doc, sort_keys=False)
 
 
 def _query_compose_containers(project_name: str) -> list[dict[str, str]]:
@@ -107,20 +131,57 @@ def _query_compose_network(project_name: str) -> str:
 
 
 @tool
-async def compose_up(compose_yaml: str, project_name: str) -> dict:
+async def compose_up(
+    compose_yaml: str,
+    project_name: str,
+    dockerfile_content: str = "",
+    name_prefix: str = "",
+) -> dict:
     """Start services from a docker-compose.yml string.
 
     Args:
         compose_yaml: The full docker-compose.yml content
         project_name: Unique project name for this CVE run
+        dockerfile_content: Optional Dockerfile contents. Required when the
+            compose YAML uses ``build:`` with ``dockerfile: Dockerfile``. It is
+            written as ``Dockerfile`` in the build context next to the compose
+            file so ``docker compose up`` can resolve it.
+        name_prefix: Optional CVE-based prefix. When set, each service in the
+            compose YAML gets ``container_name: <name_prefix>-<service>`` so the
+            running containers are identifiable by CVE.
 
     Returns:
         Running container IDs and network info.
     """
     try:
+        effective_yaml = _inject_container_names(compose_yaml, name_prefix)
         with tempfile.TemporaryDirectory() as tmpdir:
             compose_path = Path(tmpdir) / "docker-compose.yml"
-            compose_path.write_text(compose_yaml)
+            compose_path.write_text(effective_yaml)
+            if dockerfile_content:
+                (Path(tmpdir) / "Dockerfile").write_text(dockerfile_content)
+
+            # #region debug-1f8b09 log compose_up start
+            try:
+                import json as _json, time as _time
+                with open("/Users/sedriclouissaint/tools/cvehunter/.cursor/debug-1f8b09.log", "a") as _f:
+                    _f.write(_json.dumps({
+                        "sessionId": "1f8b09", "runId": "post-fix",
+                        "hypothesisId": "H1-H4",
+                        "location": "docker_ops.py:compose_up:start",
+                        "message": "compose_up invoked",
+                        "data": {
+                            "project_name": project_name,
+                            "compose_yaml": compose_yaml,
+                            "dockerfile_provided": bool(dockerfile_content),
+                            "dockerfile_len": len(dockerfile_content or ""),
+                            "timeout_s": settings.compose_up_timeout_seconds,
+                        },
+                        "timestamp": int(_time.time() * 1000),
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
 
             result = subprocess.run(
                 ["docker", "compose", "-f", str(compose_path), "-p", project_name, "up", "-d"],
@@ -128,6 +189,27 @@ async def compose_up(compose_yaml: str, project_name: str) -> dict:
                 text=True,
                 timeout=settings.compose_up_timeout_seconds,
             )
+
+            # #region debug-1f8b09 log compose_up result
+            try:
+                import json as _json, time as _time
+                with open("/Users/sedriclouissaint/tools/cvehunter/.cursor/debug-1f8b09.log", "a") as _f:
+                    _f.write(_json.dumps({
+                        "sessionId": "1f8b09", "runId": "post-fix",
+                        "hypothesisId": "H1-H4",
+                        "location": "docker_ops.py:compose_up:result",
+                        "message": "compose_up finished",
+                        "data": {
+                            "project_name": project_name,
+                            "returncode": result.returncode,
+                            "stdout_tail": (result.stdout or "")[-3000:],
+                            "stderr_tail": (result.stderr or "")[-3000:],
+                        },
+                        "timestamp": int(_time.time() * 1000),
+                    }) + "\n")
+            except Exception:
+                pass
+            # #endregion
 
             if result.returncode != 0:
                 return tool_failure(f"Compose up failed: {result.stderr}")
@@ -143,6 +225,21 @@ async def compose_up(compose_yaml: str, project_name: str) -> dict:
                 "network_name": network_name,
             })
     except Exception as e:
+        # #region debug-1f8b09 log compose_up exception
+        try:
+            import json as _json, time as _time
+            with open("/Users/sedriclouissaint/tools/cvehunter/.cursor/debug-1f8b09.log", "a") as _f:
+                _f.write(_json.dumps({
+                    "sessionId": "1f8b09", "runId": "post-fix",
+                    "hypothesisId": "H4-H5",
+                    "location": "docker_ops.py:compose_up:exception",
+                    "message": "compose_up raised",
+                    "data": {"project_name": project_name, "error": str(e), "type": type(e).__name__},
+                    "timestamp": int(_time.time() * 1000),
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
         return tool_failure(f"Compose error: {str(e)}")
 
 

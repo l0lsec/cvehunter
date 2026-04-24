@@ -77,6 +77,7 @@ class EnvironmentSpec(BaseModel):
     vulnerable_image: str
     patched_image: str
     compose_yaml: str
+    dockerfile_content: str = ""
     flag_value: str
     flag_location: str
     network_name: str
@@ -85,6 +86,8 @@ class EnvironmentSpec(BaseModel):
     patched_network_name: str = ""
     credentials: dict[str, str] = Field(default_factory=dict)
     errors: list[str] = Field(default_factory=list)
+    name_prefix: str = ""
+    run_hash: str = ""
 
 
 # ── Exploiter Output ──

@@ -83,7 +83,16 @@ Requirements:
 The flag will be inserted separately — just indicate where it should go based
 on the vulnerability type.
 
-Output a complete docker-compose.yml and any Dockerfiles needed.
+Output BOTH:
+- ``compose_yaml``: a complete docker-compose.yml.
+- ``dockerfile_content``: the full Dockerfile content when the compose file
+  uses a ``build:`` section referencing ``Dockerfile``. If every service in
+  compose uses only pre-built ``image:`` references, ``dockerfile_content``
+  may be an empty string.
+
+The Dockerfile must be self-contained: inline any source files with
+``RUN echo ... > /path/file`` or ``RUN cat <<'EOF' > /path/file`` heredocs —
+there is no build context with extra files, only the Dockerfile itself.
 """
 
 FLAG_PLACEMENT = {
@@ -115,6 +124,7 @@ async def _retry_compose(
     env_spec: EnvironmentSpec,
     last_error: dict,
     project_name: str,
+    name_prefix: str = "",
 ) -> dict:
     """Feed compose_up errors back to the LLM for iterative correction."""
     llm_with_tools = llm.bind_tools(builder_tools)
@@ -125,8 +135,12 @@ async def _retry_compose(
             content=(
                 f"The Docker build failed with this error:\n{last_error['error']}\n\n"
                 f"Original compose YAML:\n```yaml\n{env_spec.compose_yaml}\n```\n\n"
-                "Fix the issue and provide a corrected docker-compose.yml. "
-                "You can use the compose_up tool to test it."
+                f"Original Dockerfile:\n```dockerfile\n{env_spec.dockerfile_content or '(none provided)'}\n```\n\n"
+                "Fix the issue and provide a corrected docker-compose.yml plus "
+                "the matching Dockerfile. When calling the compose_up tool, pass "
+                "both `compose_yaml` and `dockerfile_content` arguments. Inline "
+                "any source files inside the Dockerfile via RUN heredocs — there "
+                "is no extra build context."
             )
         ),
     ]
@@ -148,14 +162,23 @@ async def _retry_compose(
                     yaml_arg = tool_call["args"].get("compose_yaml")
                     if yaml_arg:
                         env_spec.compose_yaml = yaml_arg
+                    df_arg = tool_call["args"].get("dockerfile_content")
+                    if df_arg:
+                        env_spec.dockerfile_content = df_arg
                     return result
 
         corrected_yaml = _extract_yaml(response.content)
-        if corrected_yaml:
-            env_spec.compose_yaml = corrected_yaml
+        corrected_dockerfile = _extract_dockerfile(response.content)
+        if corrected_yaml or corrected_dockerfile:
+            if corrected_yaml:
+                env_spec.compose_yaml = corrected_yaml
+            if corrected_dockerfile:
+                env_spec.dockerfile_content = corrected_dockerfile
             result = await compose_up.ainvoke({
-                "compose_yaml": corrected_yaml,
+                "compose_yaml": env_spec.compose_yaml,
                 "project_name": project_name,
+                "dockerfile_content": env_spec.dockerfile_content,
+                "name_prefix": name_prefix,
             })
             if "error" not in result:
                 return result
@@ -169,6 +192,28 @@ async def _retry_compose(
             retry=retry_num + 1,
             max_retries=MAX_BUILDER_RETRIES,
         )
+        # #region debug-1f8b09 log builder retry detail
+        try:
+            import json as _json, time as _time
+            with open("/Users/sedriclouissaint/tools/cvehunter/.cursor/debug-1f8b09.log", "a") as _f:
+                _f.write(_json.dumps({
+                    "sessionId": "1f8b09", "runId": "post-fix",
+                    "hypothesisId": "H1-H4",
+                    "location": "builder.py:_retry_compose",
+                    "message": "builder_retry_failed detail",
+                    "data": {
+                        "retry": retry_num + 1,
+                        "last_error": str(last_error)[:3000],
+                        "current_compose_yaml": (env_spec.compose_yaml or "")[:3000],
+                        "current_dockerfile": (env_spec.dockerfile_content or "")[:3000],
+                        "had_tool_calls": bool(getattr(response, "tool_calls", None)),
+                        "response_content_tail": (getattr(response, "content", "") or "")[-2000:],
+                    },
+                    "timestamp": int(_time.time() * 1000),
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion
 
     return last_error
 
@@ -176,6 +221,16 @@ async def _retry_compose(
 def _extract_yaml(content: str) -> str | None:
     """Extract a YAML code block from LLM response text."""
     for marker in ("```yaml", "```yml"):
+        if marker in content:
+            parts = content.split(marker, 1)
+            if len(parts) > 1:
+                return parts[1].split("```")[0].strip()
+    return None
+
+
+def _extract_dockerfile(content: str) -> str | None:
+    """Extract a Dockerfile code block from LLM response text."""
+    for marker in ("```dockerfile", "```Dockerfile"):
         if marker in content:
             parts = content.split(marker, 1)
             if len(parts) > 1:
@@ -248,16 +303,23 @@ The flag location will be: {flag_location}
     env_spec.flag_value = flag_value
     env_spec.flag_location = flag_location
 
-    project_name = f"cvehunter-{cve_package.cve_id.lower().replace('-', '_')}"
+    run_hash = secrets.token_hex(2)
+    cve_slug = cve_package.cve_id.lower()
+    name_prefix = f"{cve_slug}-{run_hash}"
+    project_name = f"cvehunter-{cve_slug}-{run_hash}"
+    env_spec.run_hash = run_hash
+    env_spec.name_prefix = name_prefix
 
     compose_result = await compose_up.ainvoke({
         "compose_yaml": env_spec.compose_yaml,
         "project_name": project_name,
+        "dockerfile_content": env_spec.dockerfile_content,
+        "name_prefix": name_prefix,
     })
 
     if "error" in compose_result:
         compose_result = await _retry_compose(
-            llm, env_spec, compose_result, project_name
+            llm, env_spec, compose_result, project_name, name_prefix
         )
 
     if "error" in compose_result:
@@ -286,9 +348,9 @@ The flag location will be: {flag_location}
     if compose_containers:
         container_name = compose_containers[0]["name"]
     elif env_spec.services:
-        container_name = f"{project_name}-{env_spec.services[0]}-1"
+        container_name = f"{name_prefix}-{env_spec.services[0]}"
     else:
-        container_name = project_name
+        container_name = name_prefix
 
     flag_result = await insert_flag.ainvoke({
         "container_name": container_name,
@@ -319,13 +381,16 @@ The flag location will be: {flag_location}
         }
 
     if env_spec.patched_image:
-        patched_project = f"{project_name}-patched"
+        patched_project = f"cvehunter-{cve_slug}-patched-{run_hash}"
+        patched_prefix = f"{cve_slug}-patched-{run_hash}"
         patched_compose = env_spec.compose_yaml.replace(
             env_spec.vulnerable_image, env_spec.patched_image
         )
         patched_result = await compose_up.ainvoke({
             "compose_yaml": patched_compose,
             "project_name": patched_project,
+            "dockerfile_content": env_spec.dockerfile_content,
+            "name_prefix": patched_prefix,
         })
         if "error" not in patched_result:
             env_spec.patched_network_name = patched_result.get(
