@@ -33,7 +33,7 @@ class ModelConfig(BaseModel):
 MODELS: dict[ModelTier, ModelConfig] = {
     ModelTier.CHEAP: ModelConfig(
         provider="deepseek",
-        model_name="deepseek-chat",
+        model_name="deepseek-v4-flash",
         tier=ModelTier.CHEAP,
         cost_per_1m_input=0.14,
         cost_per_1m_output=0.28,
@@ -47,10 +47,10 @@ MODELS: dict[ModelTier, ModelConfig] = {
     ),
     ModelTier.HEAVY: ModelConfig(
         provider="anthropic",
-        model_name="claude-opus-4-20250918",
+        model_name="claude-opus-4-5-20251101",
         tier=ModelTier.HEAVY,
-        cost_per_1m_input=15.0,
-        cost_per_1m_output=75.0,
+        cost_per_1m_input=5.0,
+        cost_per_1m_output=25.0,
     ),
     ModelTier.GEMINI: ModelConfig(
         provider="google",
@@ -94,6 +94,12 @@ class Settings(BaseModel):
     )
     compose_up_timeout_seconds: int = Field(
         default_factory=lambda: int(os.getenv("COMPOSE_UP_TIMEOUT_SECONDS", "600"))
+    )
+    health_check_attempts: int = Field(
+        default_factory=lambda: int(os.getenv("HEALTH_CHECK_ATTEMPTS", "12"))
+    )
+    health_check_delay_seconds: float = Field(
+        default_factory=lambda: float(os.getenv("HEALTH_CHECK_DELAY_SECONDS", "5"))
     )
     artifact_dir: Path = Field(
         default_factory=lambda: Path(os.getenv("ARTIFACT_DIR", "./artifacts"))

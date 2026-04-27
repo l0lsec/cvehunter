@@ -1,6 +1,6 @@
 """Judge Agent — audits the pipeline for genuineness and scores exploitability.
 
-LLM Tier: CHEAP (DeepSeek V3.2)
+LLM Tier: CHEAP (DeepSeek V4 Flash)
 Input: All artifacts from previous agents
 Output: JudgementReport
 """

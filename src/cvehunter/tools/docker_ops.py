@@ -161,55 +161,12 @@ async def compose_up(
             if dockerfile_content:
                 (Path(tmpdir) / "Dockerfile").write_text(dockerfile_content)
 
-            # #region debug-1f8b09 log compose_up start
-            try:
-                import json as _json, time as _time
-                with open("/Users/sedriclouissaint/tools/cvehunter/.cursor/debug-1f8b09.log", "a") as _f:
-                    _f.write(_json.dumps({
-                        "sessionId": "1f8b09", "runId": "post-fix",
-                        "hypothesisId": "H1-H4",
-                        "location": "docker_ops.py:compose_up:start",
-                        "message": "compose_up invoked",
-                        "data": {
-                            "project_name": project_name,
-                            "compose_yaml": compose_yaml,
-                            "dockerfile_provided": bool(dockerfile_content),
-                            "dockerfile_len": len(dockerfile_content or ""),
-                            "timeout_s": settings.compose_up_timeout_seconds,
-                        },
-                        "timestamp": int(_time.time() * 1000),
-                    }) + "\n")
-            except Exception:
-                pass
-            # #endregion
-
             result = subprocess.run(
                 ["docker", "compose", "-f", str(compose_path), "-p", project_name, "up", "-d"],
                 capture_output=True,
                 text=True,
                 timeout=settings.compose_up_timeout_seconds,
             )
-
-            # #region debug-1f8b09 log compose_up result
-            try:
-                import json as _json, time as _time
-                with open("/Users/sedriclouissaint/tools/cvehunter/.cursor/debug-1f8b09.log", "a") as _f:
-                    _f.write(_json.dumps({
-                        "sessionId": "1f8b09", "runId": "post-fix",
-                        "hypothesisId": "H1-H4",
-                        "location": "docker_ops.py:compose_up:result",
-                        "message": "compose_up finished",
-                        "data": {
-                            "project_name": project_name,
-                            "returncode": result.returncode,
-                            "stdout_tail": (result.stdout or "")[-3000:],
-                            "stderr_tail": (result.stderr or "")[-3000:],
-                        },
-                        "timestamp": int(_time.time() * 1000),
-                    }) + "\n")
-            except Exception:
-                pass
-            # #endregion
 
             if result.returncode != 0:
                 return tool_failure(f"Compose up failed: {result.stderr}")
@@ -225,21 +182,6 @@ async def compose_up(
                 "network_name": network_name,
             })
     except Exception as e:
-        # #region debug-1f8b09 log compose_up exception
-        try:
-            import json as _json, time as _time
-            with open("/Users/sedriclouissaint/tools/cvehunter/.cursor/debug-1f8b09.log", "a") as _f:
-                _f.write(_json.dumps({
-                    "sessionId": "1f8b09", "runId": "post-fix",
-                    "hypothesisId": "H4-H5",
-                    "location": "docker_ops.py:compose_up:exception",
-                    "message": "compose_up raised",
-                    "data": {"project_name": project_name, "error": str(e), "type": type(e).__name__},
-                    "timestamp": int(_time.time() * 1000),
-                }) + "\n")
-        except Exception:
-            pass
-        # #endregion
         return tool_failure(f"Compose error: {str(e)}")
 
 
@@ -257,11 +199,20 @@ async def health_check(container_name: str, check_command: str = "curl -sf http:
     client = _get_client()
     try:
         container = client.containers.get(container_name)
-        exit_code, output = container.exec_run(check_command)
+        attempts = settings.health_check_attempts
+        delay = settings.health_check_delay_seconds
+        last_exit = -1
+        last_out = b""
+        for _ in range(max(attempts, 1)):
+            last_exit, last_out = container.exec_run(["sh", "-c", check_command])
+            if last_exit == 0:
+                break
+            import time as _time
+            _time.sleep(delay)
         return tool_success({
-            "healthy": exit_code == 0,
-            "exit_code": exit_code,
-            "output": output.decode("utf-8", errors="replace")[:1000],
+            "healthy": last_exit == 0,
+            "exit_code": last_exit,
+            "output": last_out.decode("utf-8", errors="replace")[:1000],
         })
     except Exception as e:
         return tool_failure(f"Health check error: {str(e)}")

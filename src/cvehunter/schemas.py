@@ -78,6 +78,7 @@ class EnvironmentSpec(BaseModel):
     patched_image: str
     compose_yaml: str
     dockerfile_content: str = ""
+    health_check_command: str = ""
     flag_value: str
     flag_location: str
     network_name: str

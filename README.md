@@ -16,14 +16,14 @@ CVE ID → Collector → Researcher → Builder → Exploiter → Judge → Repo
               │           │                      ↑    │
               │           │                      └────┘ (feedback loop)
               │           └─── escalates to Opus 4.6 on hard CVEs
-              └─── DeepSeek V3.2 (cheap tier)
+              └─── DeepSeek V4 Flash (cheap tier)
 ```
 
 ### LLM Tier Strategy
 
 | Tier | Model | Agents | Cost |
 |------|-------|--------|------|
-| Cheap | DeepSeek V3.2 | Collector, Builder, Judge | $0.14/1M tokens |
+| Cheap | DeepSeek V4 Flash | Collector, Builder, Judge | $0.14/1M tokens |
 | Smart | Claude Sonnet 4 | Researcher, Exploiter | $3/1M tokens |
 | Heavy | Claude Opus 4.6 | Escalation only | $15/1M tokens |
 

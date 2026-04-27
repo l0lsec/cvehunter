@@ -56,6 +56,7 @@ def _build_model(
             base_url="https://api.deepseek.com/v1",
             temperature=temperature,
             max_tokens=8192,
+            extra_body={"thinking": {"type": "disabled"}},
         )
     elif model_config.provider == "openai":
         return ChatOpenAI(

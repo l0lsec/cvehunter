@@ -69,6 +69,9 @@ def main() -> None:
     args = parser.parse_args()
     setup_logging()
 
+    if hasattr(args, "cve_id") and args.cve_id:
+        args.cve_id = args.cve_id.strip().upper()
+
     if args.command == "run":
         if args.simple_researcher:
             from cvehunter.config import settings as _settings

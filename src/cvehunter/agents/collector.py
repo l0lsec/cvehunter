@@ -1,6 +1,6 @@
 """Collector Agent — gathers CVE data, patch diffs, and metadata.
 
-LLM Tier: CHEAP (DeepSeek V3.2)
+LLM Tier: CHEAP (DeepSeek V4 Flash)
 Input: CVE ID string
 Output: CVEPackage
 """
@@ -123,10 +123,11 @@ async def run_collector(state: dict[str, Any]) -> dict[str, Any]:
             )
 
     # Build a clean extraction context from tool outputs instead of reusing the
-    # tool-loop history. Passing a multi-turn history with prior tool_calls to a
-    # structured-output call (bound to only CVEPackage) causes parsing failures:
-    # DeepSeek may mirror prior tool names in its response, and LangChain's
-    # PydanticToolsParser rejects any tool_call whose name != 'CVEPackage'.
+    # tool-loop history. The COLLECTOR_SYSTEM_PROMPT names data-gathering tools
+    # (get_commit_diff, git_clone_and_diff, etc.); reusing it here makes
+    # DeepSeek emit tool_calls with those names even though only ``CVEPackage``
+    # is bound, which the PydanticToolsParser rejects. Use a focused
+    # extraction-only system prompt with no tool references.
     tool_outputs: list[str] = []
     for m in messages:
         if isinstance(m, ToolMessage):
@@ -134,12 +135,18 @@ async def run_collector(state: dict[str, Any]) -> dict[str, Any]:
     collected_context = "\n\n---\n\n".join(tool_outputs) or "(no tool data collected)"
 
     extraction_messages = [
-        SystemMessage(content=COLLECTOR_SYSTEM_PROMPT),
+        SystemMessage(
+            content=(
+                "You are a vulnerability data extractor. From the provided "
+                "collected data, populate the CVEPackage schema. Do not call any "
+                "external tools or functions — return only the structured "
+                "CVEPackage object. Fill every field you can; leave optional "
+                "fields null only when the data is genuinely unavailable."
+            )
+        ),
         HumanMessage(
             content=(
-                f"Based on the data collected below, extract a structured CVEPackage "
-                f"for {cve_id}. Fill in every field you can, leaving optional fields "
-                f"null only when the data is genuinely unavailable.\n\n"
+                f"Extract a CVEPackage for {cve_id} from the data below.\n\n"
                 f"COLLECTED DATA:\n{collected_context}"
             )
         ),
