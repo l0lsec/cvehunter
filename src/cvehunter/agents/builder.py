@@ -128,6 +128,25 @@ Java-specific rules:
 - Ensure every directory referenced by ``-d``, ``--output``, ``-o``, or
   similar flags is created with ``mkdir -p`` in the same ``RUN`` before the
   tool runs.
+
+Vulnerability-activation rules:
+- The environment must be **actually exploitable**, not just look vulnerable.
+  Common pitfalls that silently neutralise the vulnerability:
+    * Spring Boot ships ``logback-classic`` + ``log4j-to-slf4j`` via
+      ``spring-boot-starter-logging``. These bridges redirect Log4j2 API
+      calls to Logback, which does NOT process ``${jndi:...}`` lookups.
+      For Log4Shell (CVE-2021-44228), you MUST exclude
+      ``spring-boot-starter-logging`` from every starter and add
+      ``spring-boot-starter-log4j2`` so Log4j2 is the real backend.
+    * Java 8u191+ sets ``com.sun.jndi.ldap.object.trustURLCodebase=false``
+      by default, blocking remote class loading via LDAP. For a realistic
+      lab, pass ``-Dcom.sun.jndi.ldap.object.trustURLCodebase=true`` in the
+      ``CMD`` / ``ENTRYPOINT`` so the classic Log4Shell attack vector works.
+    * Similarly, ``com.sun.jndi.rmi.object.trustURLCodebase=true`` may be
+      needed for RMI-based JNDI attacks.
+  In general, verify that the code path from user input to the vulnerable
+  function actually uses the vulnerable library version and is not shadowed
+  by a framework's own adapter or shim.
 """
 
 FLAG_PLACEMENT = {

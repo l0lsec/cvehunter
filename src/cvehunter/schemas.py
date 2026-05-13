@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from typing import TypedDict
 
 from pydantic import BaseModel, Field
-
 
 # ── Collector Output ──
 
@@ -101,6 +100,7 @@ class ExploitAttempt(BaseModel):
     exploit_code: str
     stdout: str = ""
     stderr: str = ""
+    target_logs: dict[str, str] = Field(default_factory=dict)
     flag_captured: bool = False
     captured_value: str | None = None
     error_analysis: str = ""
@@ -122,7 +122,7 @@ class ExploitResult(BaseModel):
 # ── Judge Output ──
 
 
-class HITLLevel(str, Enum):
+class HITLLevel(StrEnum):
     NONE = "none"
     LOW = "low"
     MEDIUM = "medium"

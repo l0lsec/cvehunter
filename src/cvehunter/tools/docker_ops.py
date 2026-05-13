@@ -186,7 +186,10 @@ async def compose_up(
 
 
 @tool
-async def health_check(container_name: str, check_command: str = "curl -sf http://localhost/") -> dict:
+async def health_check(
+    container_name: str,
+    check_command: str = "curl -sf http://localhost/",
+) -> dict:
     """Run a health check command inside a container.
 
     Args:
@@ -362,7 +365,7 @@ async def verify_network_isolation(network_name: str) -> dict[str, Any]:
 
         probe_passed = True
         try:
-            container = client.containers.run(
+            client.containers.run(
                 "alpine:3.20",
                 command="wget -q --spider --timeout=3 http://1.1.1.1",
                 network=network_name,
@@ -399,6 +402,17 @@ async def verify_network_isolation(network_name: str) -> dict[str, Any]:
         )
     except Exception as e:
         return tool_failure(f"Network isolation check error: {e}")
+
+
+async def tail_container_logs(container_name: str, lines: int = 200) -> str:
+    """Return recent logs from a target container for exploit retry feedback."""
+    client = _get_client()
+    try:
+        container = client.containers.get(container_name)
+        raw = container.logs(stdout=True, stderr=True, tail=max(lines, 1))
+        return raw.decode("utf-8", errors="replace")
+    except Exception as e:
+        return f"(could not read logs from {container_name}: {e})"
 
 
 async def cleanup_environment(project_name: str) -> dict[str, Any]:

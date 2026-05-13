@@ -12,8 +12,6 @@ from typing import Any
 import structlog
 from langchain_core.messages import HumanMessage, SystemMessage
 
-logger = structlog.get_logger(__name__)
-
 from cvehunter.config import ModelTier
 from cvehunter.llm_router import extract_cost, get_model
 from cvehunter.schemas import (
@@ -21,9 +19,10 @@ from cvehunter.schemas import (
     EnvironmentSpec,
     ExploitRecipe,
     ExploitResult,
-    HITLLevel,
     JudgementReport,
 )
+
+logger = structlog.get_logger(__name__)
 
 JUDGE_SYSTEM_PROMPT = """\
 You are a security audit judge. Your role is to verify that an automated
@@ -63,7 +62,57 @@ Review ALL artifacts from the pipeline and check for:
    - 10: trivially exploitable, script-kiddie level
 
 Be skeptical. Look for shortcuts and false positives.
+
+Important reporting rule:
+- ``final_exploit_code`` is only populated after successful flag capture. If a
+  run failed, do NOT conclude that no exploit code was generated solely because
+  ``final_exploit_code`` is empty. Review the attempt history, stdout/stderr,
+  target service logs, and per-attempt exploit snippets.
 """
+
+
+def _truncate(value: str | None, limit: int) -> str:
+    text = value or ""
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit].rstrip()}\n...[truncated {len(text) - limit} chars]"
+
+
+def _attempt_summary(result: ExploitResult) -> str:
+    parts: list[str] = []
+    for attempt in result.attempts[-5:]:
+        code = _truncate(attempt.exploit_code, 1200)
+        stdout = _truncate(attempt.stdout, 1200)
+        stderr = _truncate(attempt.stderr, 800)
+        analysis = _truncate(attempt.error_analysis, 1000)
+        logs = "\n\n".join(
+            f"[{service}]\n{_truncate(logs, 1500)}"
+            for service, logs in attempt.target_logs.items()
+        )
+        parts.append(
+            f"""#### Attempt {attempt.attempt_number} (model: {attempt.model_tier_used})
+- Flag captured: {attempt.flag_captured}
+- Exploit code length: {len(attempt.exploit_code)} chars
+- Error analysis: {analysis or '(none)'}
+- stdout:
+```
+{stdout}
+```
+- stderr:
+```
+{stderr}
+```
+- target logs:
+```
+{logs or '(none)'}
+```
+- exploit snippet:
+```python
+{code}
+```
+"""
+        )
+    return "\n".join(parts)
 
 
 async def run_judge(state: dict[str, Any]) -> dict[str, Any]:
@@ -132,19 +181,17 @@ async def run_judge(state: dict[str, Any]) -> dict[str, Any]:
 - Total attempts: {result.total_attempts}
 - Flag captured: {result.flag_captured}
 - Fails on patched: {result.fails_on_patched}
+- Attempts with generated code: {sum(1 for a in result.attempts if a.exploit_code.strip())}
+- Last exploit code length: {len(result.attempts[-1].exploit_code) if result.attempts else 0}
 - Final exploit code:
 ```python
 {result.final_exploit_code[:3000]}
 ```
+Note: final_exploit_code is expected to be empty when flag capture fails. Judge
+failed runs from the attempt history below, not from final_exploit_code alone.
 
 ### Attempt History
-"""
-
-    for attempt in result.attempts[-5:]:
-        context += f"""
-#### Attempt {attempt.attempt_number} (model: {attempt.model_tier_used})
-- Flag captured: {attempt.flag_captured}
-- stderr: {attempt.stderr[:300]}
+{_attempt_summary(result)}
 """
 
     messages = [

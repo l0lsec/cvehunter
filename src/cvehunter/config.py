@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import warnings
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 load_dotenv()
 
 
-class ModelTier(str, Enum):
+class ModelTier(StrEnum):
     CHEAP = "cheap"
     SMART = "smart"
     HEAVY = "heavy"
@@ -120,6 +120,7 @@ class Settings(BaseModel):
 
     exploiter_max_attempts_smart: int = 10
     exploiter_max_attempts_heavy: int = 5
+    exploiter_timeout_seconds: int = 180
     researcher_escalation_threshold: int = 3
     researcher_swarm_enabled: bool = Field(
         default_factory=lambda: os.getenv("RESEARCHER_SWARM_ENABLED", "true").lower() == "true"

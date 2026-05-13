@@ -6,6 +6,7 @@ The exploit container can only reach the target Docker network.
 
 from __future__ import annotations
 
+import hashlib
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -14,9 +15,37 @@ import docker
 
 from cvehunter.config import settings
 
+SANDBOX_IMAGE_TAG = "cvehunter-sandbox:latest"
+SANDBOX_IMAGE_DIR = Path(__file__).resolve().parent / "sandbox_image"
+SANDBOX_IMAGE_FINGERPRINT_LABEL = "cvehunter.sandbox_fingerprint"
+
 
 def _get_client() -> docker.DockerClient:
     return docker.DockerClient(base_url=settings.docker_host)
+
+
+def _sandbox_image_fingerprint() -> str:
+    dockerfile = SANDBOX_IMAGE_DIR / "Dockerfile"
+    return hashlib.sha256(dockerfile.read_bytes()).hexdigest()
+
+
+def _ensure_sandbox_image(client: docker.DockerClient) -> None:
+    """Build the exploit sandbox image if missing or stale."""
+    fingerprint = _sandbox_image_fingerprint()
+    try:
+        image = client.images.get(SANDBOX_IMAGE_TAG)
+        labels = image.attrs.get("Config", {}).get("Labels") or {}
+        if labels.get(SANDBOX_IMAGE_FINGERPRINT_LABEL) == fingerprint:
+            return
+    except docker.errors.ImageNotFound:
+        pass
+
+    client.images.build(
+        path=str(SANDBOX_IMAGE_DIR),
+        tag=SANDBOX_IMAGE_TAG,
+        rm=True,
+        labels={SANDBOX_IMAGE_FINGERPRINT_LABEL: fingerprint},
+    )
 
 
 async def run_exploit(
@@ -42,6 +71,14 @@ async def run_exploit(
         stdout, stderr, and exit code from the exploit execution.
     """
     client = _get_client()
+    try:
+        _ensure_sandbox_image(client)
+    except Exception as e:
+        return {
+            "exit_code": -1,
+            "stdout": "",
+            "stderr": f"Sandbox image build error: {str(e)}",
+        }
 
     with tempfile.TemporaryDirectory() as tmpdir:
         exploit_path = Path(tmpdir) / "exploit.py"
@@ -49,7 +86,7 @@ async def run_exploit(
 
         try:
             container = client.containers.run(
-                image="python:3.12-slim",
+                image=SANDBOX_IMAGE_TAG,
                 command=["python", "/exploit/exploit.py"],
                 volumes={tmpdir: {"bind": "/exploit", "mode": "ro"}},
                 network=target_network,
@@ -57,7 +94,6 @@ async def run_exploit(
                 mem_limit="512m",
                 cpu_period=100000,
                 cpu_quota=50000,  # 50% of one CPU
-                read_only=True,
                 tmpfs={"/tmp": "size=100m"},
                 security_opt=["no-new-privileges"],
                 name=container_name or None,
@@ -88,7 +124,7 @@ async def run_exploit(
                 container.remove(force=True)
 
         except docker.errors.ImageNotFound:
-            client.images.pull("python:3.12-slim")
+            _ensure_sandbox_image(client)
             return await run_exploit(
                 exploit_code, target_network, timeout_seconds, container_name
             )
