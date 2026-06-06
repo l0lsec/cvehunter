@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import Security
 from fastapi.security import APIKeyHeader
 
-from cvehunter.api.errors import ErrorCode, ErrorResponse, HTTP_STATUS_MAP
+from cvehunter.api.errors import HTTP_STATUS_MAP, ErrorCode, ErrorResponse
 from cvehunter.config import settings
 
 _api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)

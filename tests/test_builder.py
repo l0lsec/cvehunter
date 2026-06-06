@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
+import yaml
 
 from cvehunter.agents.builder import (
     _extract_yaml,
@@ -12,6 +12,7 @@ from cvehunter.agents.builder import (
     load_template,
     run_builder,
 )
+from cvehunter.config import settings
 from cvehunter.schemas import EnvironmentSpec
 
 
@@ -53,7 +54,6 @@ class TestRunBuilderSuccess:
 
         with (
             patch("cvehunter.agents.builder.get_model", return_value=mock_llm),
-            patch("cvehunter.agents.builder.extract_cost", return_value=0.01),
             patch("cvehunter.agents.builder.check_cost_limits", return_value=None),
             patch(
                 "cvehunter.agents.builder.compose_up",
@@ -82,6 +82,10 @@ class TestRunBuilderSuccess:
         assert env.flag_value.startswith("CVEHUNTER{")
         assert env.network_name == "cvehunter-cve_2021_44228_default"
         assert env.health_check_passed is True
+        # The persisted compose artifact reflects the isolated form: the LLM's
+        # bare compose (no networks section) gains an internal default network.
+        persisted = yaml.safe_load(env.compose_yaml)
+        assert persisted["networks"]["default"]["internal"] is True
 
 
 class TestRunBuilderComposeRetry:
@@ -105,7 +109,6 @@ class TestRunBuilderComposeRetry:
 
         with (
             patch("cvehunter.agents.builder.get_model", return_value=mock_llm),
-            patch("cvehunter.agents.builder.extract_cost", return_value=0.0),
             patch("cvehunter.agents.builder.check_cost_limits", return_value=None),
             patch(
                 "cvehunter.agents.builder.compose_up",
@@ -143,7 +146,6 @@ class TestRunBuilderComposeExhausted:
 
         with (
             patch("cvehunter.agents.builder.get_model", return_value=mock_llm),
-            patch("cvehunter.agents.builder.extract_cost", return_value=0.0),
             patch("cvehunter.agents.builder.check_cost_limits", return_value=None),
             patch(
                 "cvehunter.agents.builder.compose_up",
@@ -180,7 +182,6 @@ class TestRunBuilderHealthCheckFailure:
 
         with (
             patch("cvehunter.agents.builder.get_model", return_value=mock_llm),
-            patch("cvehunter.agents.builder.extract_cost", return_value=0.0),
             patch("cvehunter.agents.builder.check_cost_limits", return_value=None),
             patch(
                 "cvehunter.agents.builder.compose_up",
@@ -204,6 +205,103 @@ class TestRunBuilderHealthCheckFailure:
             result = await run_builder(state)
 
         assert result["status"] == "environment_failed"
+
+
+class TestRunBuilderNetworkIsolation:
+    async def test_isolation_failure_is_fatal_when_enforced(
+        self, sample_cve_package, sample_exploit_recipe, mock_structured_llm
+    ):
+        env_spec = _env_spec_from_llm()
+        mock_llm = mock_structured_llm(env_spec)
+
+        compose_result = {
+            "project_name": "cvehunter-cve_2021_44228",
+            "status": "running",
+            "containers": [{"name": "cvehunter-cve_2021_44228-web-1"}],
+            "network_name": "cvehunter-cve_2021_44228_default",
+        }
+        isolation_fail = {
+            "error": "Network 'cvehunter-cve_2021_44228_default' is not marked as internal",
+            "internal": False,
+        }
+
+        with (
+            patch("cvehunter.agents.builder.get_model", return_value=mock_llm),
+            patch("cvehunter.agents.builder.check_cost_limits", return_value=None),
+            patch(
+                "cvehunter.agents.builder.compose_up",
+                MagicMock(ainvoke=AsyncMock(return_value=compose_result)),
+            ),
+            patch(
+                "cvehunter.agents.builder.verify_network_isolation",
+                new_callable=AsyncMock,
+                return_value=isolation_fail,
+            ),
+            patch.object(settings, "network_isolation_enforced", True),
+        ):
+            state = {
+                "cve_package": sample_cve_package,
+                "exploit_recipe": sample_exploit_recipe,
+                "total_cost_usd": 0.0,
+            }
+            result = await run_builder(state)
+
+        assert result["status"] == "environment_failed"
+        assert any("isolation failed" in e.lower() for e in result.get("errors", []))
+
+    async def test_isolation_failure_is_warning_when_not_enforced(
+        self, sample_cve_package, sample_exploit_recipe, mock_structured_llm
+    ):
+        env_spec = _env_spec_from_llm()
+        mock_llm = mock_structured_llm(env_spec)
+
+        compose_result = {
+            "project_name": "cvehunter-cve_2021_44228",
+            "status": "running",
+            "containers": [{"name": "cvehunter-cve_2021_44228-web-1"}],
+            "network_name": "cvehunter-cve_2021_44228_default",
+        }
+        patched_compose_result = {
+            "project_name": "cvehunter-cve_2021_44228-patched",
+            "network_name": "cvehunter-cve_2021_44228-patched_default",
+        }
+        isolation_fail = {
+            "error": "Network 'cvehunter-cve_2021_44228_default' is not marked as internal",
+            "internal": False,
+        }
+
+        with (
+            patch("cvehunter.agents.builder.get_model", return_value=mock_llm),
+            patch("cvehunter.agents.builder.check_cost_limits", return_value=None),
+            patch(
+                "cvehunter.agents.builder.compose_up",
+                MagicMock(ainvoke=AsyncMock(side_effect=[compose_result, patched_compose_result])),
+            ),
+            patch(
+                "cvehunter.agents.builder.insert_flag",
+                MagicMock(ainvoke=AsyncMock(return_value={"status": "inserted"})),
+            ),
+            patch(
+                "cvehunter.agents.builder.health_check",
+                MagicMock(ainvoke=AsyncMock(return_value={"healthy": True})),
+            ),
+            patch(
+                "cvehunter.agents.builder.verify_network_isolation",
+                new_callable=AsyncMock,
+                return_value=isolation_fail,
+            ),
+            patch.object(settings, "network_isolation_enforced", False),
+        ):
+            state = {
+                "cve_package": sample_cve_package,
+                "exploit_recipe": sample_exploit_recipe,
+                "total_cost_usd": 0.0,
+            }
+            result = await run_builder(state)
+
+        assert result["status"] == "environment_ready"
+        env = result["environment"]
+        assert any("isolation warning" in e.lower() for e in env.errors)
 
 
 class TestLoadTemplate:

@@ -55,10 +55,14 @@ async def fetch_osv(cve_id: str) -> dict:
                                     "commit": event["fixed"],
                                 })
 
+            details = vuln.get("details", "") or ""
+            if len(details) > 2000:
+                details = details[:2000] + "\n... [truncated]"
+
             return tool_success({
                 "osv_id": vuln.get("id", ""),
                 "summary": vuln.get("summary", ""),
-                "details": vuln.get("details", "")[:2000],
+                "details": details,
                 "affected_packages": affected_packages,
                 "fix_commits": fix_commits,
                 "references": [

@@ -25,9 +25,12 @@
     .status-cancelling     { color: var(--pico-muted-color); }
     .status-cancelled      { color: var(--pico-muted-color); }
     .status-completed      { color: var(--pico-ins-color); }
+    .status-collected      { color: var(--pico-primary); }
+    .status-collected_incomplete { color: #e67e22; }
     .status-approved_by_human { color: var(--pico-ins-color); }
     .status-rejected_by_human { color: var(--pico-del-color); }
     .status-judged_partial { color: #e67e22; }
+    .status-hitl_paused    { color: #e67e22; }
     .status-error          { color: var(--pico-del-color); }
     nav .brand { font-weight: 700; font-size: 1.15rem; }
     .mono { font-family: var(--pico-font-family-monospace); font-size: .88rem; }
@@ -86,6 +89,7 @@
     </ul>
     <ul>
       <li><a href="/dashboard/">Dashboard</a></li>
+      <li><a href="/dashboard/status">Status</a></li>
       <li><a href="/dashboard/llms">LLMs</a></li>
       <li><a href="/health">API Health</a></li>
     </ul>

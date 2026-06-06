@@ -23,6 +23,7 @@ dependencies = [
     "beautifulsoup4",
     "fastapi",
     "uvicorn[standard]",
+    "python-multipart",
     "python-dotenv",
     "rich",
     "structlog",

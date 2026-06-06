@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
 from cvehunter.agents.judge import run_judge
 from cvehunter.schemas import JudgementReport
 
@@ -24,10 +22,7 @@ class TestRunJudgeSuccess:
         mock_structured.ainvoke = AsyncMock(return_value=sample_judgement_report)
         mock_llm.with_structured_output = MagicMock(return_value=mock_structured)
 
-        with (
-            patch("cvehunter.agents.judge.get_model", return_value=mock_llm),
-            patch("cvehunter.agents.judge.extract_cost", return_value=0.005),
-        ):
+        with patch("cvehunter.agents.judge.get_model", return_value=mock_llm):
             state = {
                 "cve_id": "CVE-2021-44228",
                 "cve_package": sample_cve_package,

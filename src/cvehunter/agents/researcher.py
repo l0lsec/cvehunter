@@ -1,6 +1,6 @@
 """Researcher Agent — analyzes vulnerabilities and builds exploit chains.
 
-LLM Tier: SMART (Claude Sonnet 4), escalates to HEAVY (Opus 4.6) on failure
+LLM Tier: SMART (Claude Sonnet 4.6), escalates to HEAVY (Opus 4.8) on failure
 Input: CVEPackage
 Output: ExploitRecipe with PrimitivesGraph
 """
@@ -12,12 +12,12 @@ from typing import Any
 import structlog
 from langchain_core.messages import HumanMessage, SystemMessage
 
-logger = structlog.get_logger(__name__)
-
 from cvehunter.config import settings
 from cvehunter.cost_tracker import check_cost_limits
-from cvehunter.llm_router import extract_cost, get_model, get_tier_for_agent
+from cvehunter.llm_router import get_model, get_tier_for_agent, structured_call
 from cvehunter.schemas import CVEPackage, ExploitRecipe
+
+logger = structlog.get_logger(__name__)
 
 RESEARCHER_SYSTEM_PROMPT = """\
 You are an expert vulnerability researcher. Given detailed CVE information including
@@ -97,9 +97,18 @@ async def run_researcher(state: dict[str, Any]) -> dict[str, Any]:
         HumanMessage(content=context),
     ]
 
-    structured_llm = llm.with_structured_output(ExploitRecipe, method="function_calling")
-    recipe = await structured_llm.ainvoke(messages)
-    run_cost += extract_cost(recipe, tier) if hasattr(recipe, "usage_metadata") else 0.0
+    recipe, call_cost = await structured_call(llm, ExploitRecipe, messages, tier)
+    run_cost += call_cost
+
+    if recipe is None:
+        return {
+            "status": "research_failed",
+            "errors": state.get("errors", [])
+            + [f"Researcher could not produce an ExploitRecipe for {cve_package.cve_id}"],
+            "researcher_attempts": researcher_attempts,
+            "researcher_escalated": escalate,
+            "total_cost_usd": run_cost,
+        }
 
     has_complete_chain = len(recipe.primitives_graph.complete_chains) > 0
 
@@ -107,6 +116,10 @@ async def run_researcher(state: dict[str, Any]) -> dict[str, Any]:
         "exploit_recipe": recipe,
         "status": "researched",
         "researcher_attempts": researcher_attempts,
+        # Persist the escalation flag explicitly: LangGraph only keeps state keys
+        # that a node returns, so without this the HEAVY-tier escalation set by
+        # ``_run_researcher_escalated`` would be lost on the next pass.
+        "researcher_escalated": escalate,
         "total_cost_usd": run_cost,
     }
 
@@ -122,10 +135,20 @@ async def run_researcher(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def should_escalate_researcher(state: dict[str, Any]) -> str:
-    """LangGraph conditional edge: retry, escalate to Opus, or continue to Builder."""
+    """LangGraph conditional edge: retry, escalate to Opus, skip to judge, or continue.
+
+    The builder requires an ``exploit_recipe``; a cost-limit abort or a hard
+    research/verification failure leaves none, so those route straight to the
+    judge (which emits a partial "could not assess" report) instead of crashing
+    the builder with missing state.
+    """
+    if state.get("status") == "cost_limit_exceeded":
+        return "skip_to_judge"
+    if state.get("exploit_recipe") is None:
+        return "skip_to_judge"
     if state.get("researcher_needs_escalation") and not state.get("researcher_escalated"):
         return "escalate"
-    recipe = state.get("exploit_recipe")
-    if recipe and len(recipe.primitives_graph.complete_chains) == 0:
+    recipe = state["exploit_recipe"]
+    if len(recipe.primitives_graph.complete_chains) == 0:
         return "retry"
     return "continue"

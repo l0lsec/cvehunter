@@ -58,7 +58,6 @@ class TestRunResearcherSuccess:
             patch("cvehunter.agents.researcher.get_model", return_value=mock_llm),
             patch("cvehunter.agents.researcher.get_tier_for_agent", return_value="smart"),
             patch("cvehunter.agents.researcher.check_cost_limits", return_value=None),
-            patch("cvehunter.agents.researcher.extract_cost", return_value=0.05),
         ):
             state = {"cve_package": sample_cve_package, "total_cost_usd": 0.0}
             result = await run_researcher(state)
@@ -82,7 +81,6 @@ class TestRunResearcherNoChainBelowThreshold:
             patch("cvehunter.agents.researcher.get_model", return_value=mock_llm),
             patch("cvehunter.agents.researcher.get_tier_for_agent", return_value="smart"),
             patch("cvehunter.agents.researcher.check_cost_limits", return_value=None),
-            patch("cvehunter.agents.researcher.extract_cost", return_value=0.0),
         ):
             state = {
                 "cve_package": sample_cve_package,
@@ -108,7 +106,6 @@ class TestRunResearcherEscalationTriggered:
             patch("cvehunter.agents.researcher.get_model", return_value=mock_llm),
             patch("cvehunter.agents.researcher.get_tier_for_agent", return_value="smart"),
             patch("cvehunter.agents.researcher.check_cost_limits", return_value=None),
-            patch("cvehunter.agents.researcher.extract_cost", return_value=0.0),
             patch("cvehunter.agents.researcher.settings") as mock_settings,
         ):
             mock_settings.researcher_escalation_threshold = 3
@@ -158,6 +155,11 @@ class TestShouldEscalateResearcher:
         }
         assert should_escalate_researcher(state) == "continue"
 
-    def test_returns_continue_when_no_recipe(self):
+    def test_returns_skip_to_judge_when_no_recipe(self):
+        # No recipe means the builder can't run; route to the judge instead.
         state = {"researcher_needs_escalation": False, "exploit_recipe": None}
-        assert should_escalate_researcher(state) == "continue"
+        assert should_escalate_researcher(state) == "skip_to_judge"
+
+    def test_returns_skip_to_judge_on_cost_limit(self):
+        state = {"status": "cost_limit_exceeded", "exploit_recipe": None}
+        assert should_escalate_researcher(state) == "skip_to_judge"

@@ -8,8 +8,10 @@ from typing import Any
 import structlog
 from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import BaseMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
+from pydantic import BaseModel
 
 from cvehunter.config import (
     AGENT_MODEL_MAPPING,
@@ -163,3 +165,45 @@ def extract_cost(response: Any, tier: ModelTier) -> float:
         usage.get("output_tokens", 0),
         tier,
     )
+
+
+async def structured_call(
+    llm: BaseChatModel,
+    schema: type[BaseModel],
+    messages: list[BaseMessage],
+    tier: ModelTier,
+) -> tuple[BaseModel | None, float]:
+    """Invoke an LLM for a structured (Pydantic) output and report its cost.
+
+    Uses ``with_structured_output(..., include_raw=True)`` so we can read the
+    raw ``AIMessage`` usage metadata (the parsed object alone carries no usage,
+    which previously made every structured call report ``$0`` and silently
+    defeated the cost limits). Parsing failures are surfaced as a ``None``
+    result instead of an unhandled exception that would crash the agent node.
+
+    Returns ``(parsed_model_or_None, cost_usd)``.
+    """
+    structured_llm = llm.with_structured_output(
+        schema, method="function_calling", include_raw=True
+    )
+    try:
+        result = await structured_llm.ainvoke(messages)
+    except Exception:
+        logger.exception("structured_output_invoke_failed", schema=schema.__name__)
+        return None, 0.0
+
+    raw = result.get("raw") if isinstance(result, dict) else None
+    parsed = result.get("parsed") if isinstance(result, dict) else result
+    parsing_error = result.get("parsing_error") if isinstance(result, dict) else None
+
+    cost = extract_cost(raw, tier) if raw is not None else 0.0
+
+    if parsing_error is not None or parsed is None:
+        logger.warning(
+            "structured_output_parse_failed",
+            schema=schema.__name__,
+            error=str(parsing_error) if parsing_error else "no parsed object returned",
+        )
+        return None, cost
+
+    return parsed, cost

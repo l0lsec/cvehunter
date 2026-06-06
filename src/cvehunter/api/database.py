@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import aiosqlite
@@ -76,7 +76,7 @@ async def init_db() -> None:
 
 async def create_run(cve_id: str) -> dict[str, Any]:
     run_id = str(uuid.uuid4())
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     async with aiosqlite.connect(_db_path()) as db:
         await db.execute(
             "INSERT INTO runs (id, cve_id, status, started_at) VALUES (?, ?, ?, ?)",
@@ -118,12 +118,20 @@ async def list_runs() -> list[dict[str, Any]]:
 
 
 async def update_run(cve_id: str, **fields: Any) -> None:
+    """Update columns on the latest run row for a CVE.
+
+    Callers that represent a *terminal* state must pass ``completed_at``
+    explicitly (use ``datetime.now(timezone.utc).isoformat()``). In-flight
+    status changes (``running``/``resuming``/``cancelling``/``hitl_paused``)
+    intentionally omit it so the UI doesn't mislabel a live run as finished.
+    """
     if "full_result_json" in fields and not isinstance(fields["full_result_json"], str):
         fields["full_result_json"] = json.dumps(
             fields["full_result_json"], default=_json_default
         )
-    if "completed_at" not in fields:
-        fields["completed_at"] = datetime.now(timezone.utc).isoformat()
+
+    if not fields:
+        return
 
     set_clause = ", ".join(f"{k} = ?" for k in fields)
     values = list(fields.values()) + [cve_id]

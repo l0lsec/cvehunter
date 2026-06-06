@@ -30,7 +30,7 @@ from cvehunter.artifacts import save_artifacts
 from cvehunter.config import settings
 from cvehunter.cost_tracker import load_monthly_spend, save_monthly_spend
 from cvehunter.schemas import GraphState, HITLLevel
-from cvehunter.tools.docker_ops import cleanup_environment
+from cvehunter.tools.docker_ops import cleanup_cve_environments
 
 logger = structlog.get_logger(__name__)
 
@@ -137,7 +137,11 @@ async def _hitl_gate_node(state: dict[str, Any]) -> dict[str, Any]:
         "summary": judgement.summary if judgement else "",
     })
 
-    action = human_response.get("action", "approve") if isinstance(human_response, dict) else "approve"
+    action = (
+        human_response.get("action", "approve")
+        if isinstance(human_response, dict)
+        else "approve"
+    )
     notes = human_response.get("notes", "") if isinstance(human_response, dict) else ""
 
     if action == "reject":
@@ -162,9 +166,8 @@ def _should_pause_for_hitl(state: dict[str, Any]) -> str:
 async def _cleanup_node(state: dict[str, Any]) -> dict[str, Any]:
     """Tear down Docker environments created for this CVE run."""
     cve_id = state.get("cve_id", "")
-    project = f"cvehunter-{cve_id.lower().replace('-', '_')}"
-    await cleanup_environment(project)
-    await cleanup_environment(f"{project}-patched")
+    if cve_id:
+        await cleanup_cve_environments(cve_id)
     return state
 
 
@@ -202,13 +205,14 @@ def build_pipeline() -> StateGraph:
         },
     )
 
-    # Researcher → conditional: retry, escalate, or continue to Builder
+    # Researcher → conditional: retry, escalate, skip to judge, or continue to Builder
     workflow.add_conditional_edges(
         "researcher",
         should_escalate_researcher,
         {
             "retry": "researcher",
             "escalate": "researcher_escalated",
+            "skip_to_judge": "judge",
             "continue": "builder",
         },
     )
@@ -292,6 +296,8 @@ async def run_pipeline(cve_id: str) -> dict[str, Any]:
         "errors": [],
         "status": "started",
         "researcher_attempts": 0,
+        "researcher_escalated": False,
+        "researcher_needs_escalation": False,
     }
 
     config = {"configurable": {"thread_id": cve_id}}
@@ -309,9 +315,7 @@ async def run_pipeline(cve_id: str) -> dict[str, Any]:
             )
         except Exception:
             logger.exception("pipeline_failed", cve_id=cve_id)
-            project = f"cvehunter-{cve_id.lower().replace('-', '_')}"
-            await cleanup_environment(project)
-            await cleanup_environment(f"{project}-patched")
+            await cleanup_cve_environments(cve_id)
             raise
         finally:
             save_artifacts(cve_id, final_state)

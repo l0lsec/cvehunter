@@ -6,9 +6,9 @@ Implements the four-role swarm architecture:
   3. Contrarian   — challenges assumptions, finds alternative paths
   4. Verifier     — validates that the combined recipe is internally consistent
 
-Models rotate across iterations: [DeepSeek, Sonnet, Gemini] (skipping any
-whose API key is absent). Falls back to single-model researcher if only one
-model is available.
+Models rotate across iterations: [Sonnet, Opus] (skipping any whose API key
+is absent). Falls back to single-model researcher if only one model is
+available.
 
 Uses LangGraph's Send API for parallel fan-out of Lead + Contrarian.
 """
@@ -21,12 +21,11 @@ import structlog
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.constants import Send
-from langgraph.graph import END, StateGraph
 
 from cvehunter.config import ModelTier, settings
 from cvehunter.cost_tracker import check_cost_limits
-from cvehunter.llm_router import extract_cost, get_rotation_models
-from cvehunter.schemas import CVEPackage, ExploitRecipe, PrimitivesGraph
+from cvehunter.llm_router import extract_cost, get_rotation_models, structured_call
+from cvehunter.schemas import CVEPackage, ExploitRecipe
 
 logger = structlog.get_logger(__name__)
 
@@ -145,9 +144,7 @@ async def _lead_researcher(state: dict[str, Any]) -> dict[str, Any]:
         HumanMessage(content=context),
     ]
 
-    structured = model.with_structured_output(ExploitRecipe, method="function_calling")
-    recipe = await structured.ainvoke(messages)
-    cost = extract_cost(recipe, tier) if hasattr(recipe, "usage_metadata") else 0.0
+    recipe, cost = await structured_call(model, ExploitRecipe, messages, tier)
 
     return {
         "_lead_recipe": recipe,
@@ -168,9 +165,7 @@ async def _contrarian(state: dict[str, Any]) -> dict[str, Any]:
         HumanMessage(content=context),
     ]
 
-    structured = model.with_structured_output(ExploitRecipe, method="function_calling")
-    recipe = await structured.ainvoke(messages)
-    cost = extract_cost(recipe, tier) if hasattr(recipe, "usage_metadata") else 0.0
+    recipe, cost = await structured_call(model, ExploitRecipe, messages, tier)
 
     return {
         "_contrarian_recipe": recipe,
@@ -188,7 +183,11 @@ async def _verifier(state: dict[str, Any]) -> dict[str, Any]:
     contrarian: ExploitRecipe | None = state.get("_contrarian_recipe")
 
     lead_json = lead.model_dump_json(indent=2) if lead else "No lead analysis available."
-    contrarian_json = contrarian.model_dump_json(indent=2) if contrarian else "No contrarian analysis available."
+    contrarian_json = (
+        contrarian.model_dump_json(indent=2)
+        if contrarian
+        else "No contrarian analysis available."
+    )
 
     context = f"""{_build_cve_context(cve_package)}
 
@@ -208,9 +207,7 @@ async def _verifier(state: dict[str, Any]) -> dict[str, Any]:
         HumanMessage(content=context),
     ]
 
-    structured = model.with_structured_output(ExploitRecipe, method="function_calling")
-    recipe = await structured.ainvoke(messages)
-    cost = extract_cost(recipe, tier) if hasattr(recipe, "usage_metadata") else 0.0
+    recipe, cost = await structured_call(model, ExploitRecipe, messages, tier)
 
     return {
         "_verified_recipe": recipe,
@@ -288,9 +285,22 @@ async def run_researcher_swarm(state: dict[str, Any]) -> dict[str, Any]:
 
     swarm_state = {**swarm_state, **(await _verifier(swarm_state))}
 
-    recipe: ExploitRecipe = swarm_state["_verified_recipe"]
-    accumulated = swarm_state.get("_accumulated_cost", 0.0)
-    run_cost += accumulated
+    recipe = swarm_state.get("_verified_recipe")
+    run_cost += swarm_state.get("_accumulated_cost", 0.0)
+
+    escalate = state.get("researcher_escalated", False)
+
+    if recipe is None:
+        # The verifier failed to produce a usable recipe; surface it so the
+        # pipeline routes to the judge (or escalation) instead of KeyError-ing.
+        return {
+            "status": "research_failed",
+            "errors": state.get("errors", [])
+            + [f"Researcher swarm could not verify an ExploitRecipe for {cve_package.cve_id}"],
+            "researcher_attempts": researcher_attempts,
+            "researcher_escalated": escalate,
+            "total_cost_usd": run_cost,
+        }
 
     has_complete_chain = len(recipe.primitives_graph.complete_chains) > 0
 
@@ -298,10 +308,11 @@ async def run_researcher_swarm(state: dict[str, Any]) -> dict[str, Any]:
         "exploit_recipe": recipe,
         "status": "researched",
         "researcher_attempts": researcher_attempts,
+        # Persist the escalation flag (LangGraph drops state keys a node doesn't return).
+        "researcher_escalated": escalate,
         "total_cost_usd": run_cost,
     }
 
-    escalate = state.get("researcher_escalated", False)
     if not has_complete_chain and not escalate:
         if researcher_attempts >= settings.researcher_escalation_threshold:
             result["researcher_needs_escalation"] = True

@@ -32,26 +32,28 @@ class ModelConfig(BaseModel):
 
 MODELS: dict[ModelTier, ModelConfig] = {
     ModelTier.CHEAP: ModelConfig(
-        provider="deepseek",
-        model_name="deepseek-v4-flash",
+        provider="anthropic",
+        model_name="claude-haiku-4-5",
         tier=ModelTier.CHEAP,
-        cost_per_1m_input=0.14,
-        cost_per_1m_output=0.28,
+        cost_per_1m_input=1.0,
+        cost_per_1m_output=5.0,
     ),
     ModelTier.SMART: ModelConfig(
         provider="anthropic",
-        model_name="claude-sonnet-4-20250514",
+        model_name="claude-sonnet-4-6",
         tier=ModelTier.SMART,
         cost_per_1m_input=3.0,
         cost_per_1m_output=15.0,
     ),
     ModelTier.HEAVY: ModelConfig(
         provider="anthropic",
-        model_name="claude-opus-4-5-20251101",
+        model_name="claude-opus-4-8",
         tier=ModelTier.HEAVY,
         cost_per_1m_input=5.0,
         cost_per_1m_output=25.0,
     ),
+    # Dormant: kept so users can opt back into a Gemini tier via config, but no
+    # agent maps to it and it is not part of the default Anthropic-only rotation.
     ModelTier.GEMINI: ModelConfig(
         provider="google",
         model_name="gemini-2.5-pro",
@@ -61,7 +63,9 @@ MODELS: dict[ModelTier, ModelConfig] = {
     ),
 }
 
-ROTATION_TIERS: list[ModelTier] = [ModelTier.CHEAP, ModelTier.SMART, ModelTier.GEMINI]
+# Anthropic-only researcher-swarm rotation (Sonnet ↔ Opus). The swarm's value
+# comes from its four role-diverse sub-agents, not cross-provider diversity.
+ROTATION_TIERS: list[ModelTier] = [ModelTier.SMART, ModelTier.HEAVY]
 
 AGENT_MODEL_MAPPING: dict[str, ModelTier] = {
     "collector": ModelTier.CHEAP,
@@ -94,6 +98,15 @@ class Settings(BaseModel):
     )
     compose_up_timeout_seconds: int = Field(
         default_factory=lambda: int(os.getenv("COMPOSE_UP_TIMEOUT_SECONDS", "600"))
+    )
+    # When true, a failed network-isolation check (network not internal, or an
+    # outbound probe that reached the internet) aborts the build with
+    # ``environment_failed`` instead of only logging a warning. compose_up forces
+    # ``internal: true`` on project networks, so this should pass by construction;
+    # a failure here means the lab can egress and must not run.
+    network_isolation_enforced: bool = Field(
+        default_factory=lambda: os.getenv("NETWORK_ISOLATION_ENFORCED", "true").lower()
+        == "true"
     )
     health_check_attempts: int = Field(
         default_factory=lambda: int(os.getenv("HEALTH_CHECK_ATTEMPTS", "12"))
@@ -138,12 +151,14 @@ class Settings(BaseModel):
         missing = []
         if not self.anthropic_api_key:
             missing.append("ANTHROPIC_API_KEY")
-        if not self.deepseek_api_key:
-            missing.append("DEEPSEEK_API_KEY")
         if missing:
             raise ValueError(
                 f"Required API keys not set: {', '.join(missing)}. "
                 "Set them in your .env file or environment."
+            )
+        if not self.deepseek_api_key:
+            warnings.warn(
+                "DEEPSEEK_API_KEY not set; DeepSeek is optional (all tiers default to Anthropic)"
             )
         if not self.nvd_api_key:
             warnings.warn("NVD_API_KEY not set; NVD queries will be rate-limited")
@@ -151,7 +166,7 @@ class Settings(BaseModel):
             warnings.warn("GITHUB_TOKEN not set; GitHub API limited to 60 req/hr")
         if not self.google_api_key:
             warnings.warn(
-                "GOOGLE_API_KEY not set; Gemini models unavailable for researcher swarm rotation"
+                "GOOGLE_API_KEY not set; Gemini is optional (not used by default)"
             )
 
 

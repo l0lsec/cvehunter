@@ -4,11 +4,10 @@
 {% block content %}
 <section>
   <h2>Submit CVE for Analysis</h2>
-  <form hx-post="/api/v1/run"
-        hx-headers='{"Content-Type": "application/json"}'
+  <form id="submit-form"
+        hx-post="/dashboard/actions/submit"
         hx-target="#submit-result"
         hx-swap="innerHTML"
-        hx-ext="json-enc"
         hx-indicator="#submit-spinner">
     <fieldset role="group">
       <input type="text" name="cve_id" placeholder="CVE-2024-12345" required
@@ -17,10 +16,19 @@
         Analyze
         <span id="submit-spinner" class="htmx-indicator" aria-busy="true"></span>
       </button>
+      <button type="button" class="secondary"
+              hx-post="/dashboard/actions/collect"
+              hx-include="#submit-form"
+              hx-target="#submit-result"
+              hx-swap="innerHTML"
+              title="Run only the Collector agent">Collect only</button>
     </fieldset>
+    <label>
+      <input type="checkbox" name="simple_researcher" />
+      Simple researcher (disable multi-model swarm)
+    </label>
   </form>
   <div id="submit-result"></div>
-  <script src="https://unpkg.com/htmx-ext-json-enc@2.0.1/json-enc.js"></script>
 </section>
 
 <section>

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from cvehunter.config import settings
 
@@ -18,7 +18,7 @@ def load_monthly_spend() -> float:
         data = json.loads(_SPEND_FILE.read_text())
     except (json.JSONDecodeError, OSError):
         return 0.0
-    current_month = datetime.now(timezone.utc).strftime("%Y-%m")
+    current_month = datetime.now(UTC).strftime("%Y-%m")
     if data.get("month") != current_month:
         return 0.0
     return data.get("total", 0.0)
@@ -30,7 +30,7 @@ def save_monthly_spend(total: float) -> None:
     _SPEND_FILE.write_text(
         json.dumps(
             {
-                "month": datetime.now(timezone.utc).strftime("%Y-%m"),
+                "month": datetime.now(UTC).strftime("%Y-%m"),
                 "total": round(total, 6),
             }
         )

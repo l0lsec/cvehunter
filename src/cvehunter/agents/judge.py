@@ -1,6 +1,6 @@
 """Judge Agent — audits the pipeline for genuineness and scores exploitability.
 
-LLM Tier: CHEAP (DeepSeek V4 Flash)
+LLM Tier: CHEAP (Claude Haiku 4.5)
 Input: All artifacts from previous agents
 Output: JudgementReport
 """
@@ -13,7 +13,7 @@ import structlog
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from cvehunter.config import ModelTier
-from cvehunter.llm_router import extract_cost, get_model
+from cvehunter.llm_router import get_model, structured_call
 from cvehunter.schemas import (
     CVEPackage,
     EnvironmentSpec,
@@ -199,9 +199,21 @@ failed runs from the attempt history below, not from final_exploit_code alone.
         HumanMessage(content=context),
     ]
 
-    structured_llm = llm.with_structured_output(JudgementReport, method="function_calling")
-    report = await structured_llm.ainvoke(messages)
-    run_cost += extract_cost(report, tier) if hasattr(report, "usage_metadata") else 0.0
+    report, call_cost = await structured_call(llm, JudgementReport, messages, tier)
+    run_cost += call_cost
+
+    if report is None:
+        return {
+            "judgement": JudgementReport(
+                cve_id=cve_package.cve_id,
+                exploitability_score=0.0,
+                summary="Judge could not produce a structured assessment.",
+                full_analysis="The judge LLM failed to return a valid JudgementReport.",
+            ),
+            "status": "judged_partial",
+            "total_cost_usd": run_cost,
+        }
+
     report.cve_id = cve_package.cve_id
 
     return {

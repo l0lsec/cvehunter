@@ -41,7 +41,18 @@
               hx-confirm="Cancel {{ run.cve_id }}?">Cancel</button>
     {% elif run.status == "cancelling" %}
       <button class="secondary outline" disabled aria-busy="true">Cancelling&hellip;</button>
-    {% elif run.status in ("error", "cancelled", "judged_partial", "completed", "rejected_by_human", "approved_by_human") %}
+    {% elif run.status == "hitl_paused" %}
+      <button hx-post="/dashboard/actions/hitl/{{ run.cve_id }}"
+              hx-vals='{"action": "approve"}'
+              hx-target="#run-{{ run.cve_id }}"
+              hx-swap="outerHTML">Approve</button>
+      <button class="secondary outline"
+              hx-post="/dashboard/actions/hitl/{{ run.cve_id }}"
+              hx-vals='{"action": "reject"}'
+              hx-target="#run-{{ run.cve_id }}"
+              hx-swap="outerHTML"
+              hx-confirm="Reject {{ run.cve_id }}?">Reject</button>
+    {% elif run.status in ("error", "cancelled", "judged_partial", "completed", "collected", "collected_incomplete", "rejected_by_human", "approved_by_human") %}
       <button hx-post="/dashboard/actions/retry/{{ run.cve_id }}"
               hx-target="#run-{{ run.cve_id }}"
               hx-swap="outerHTML">Retry</button>

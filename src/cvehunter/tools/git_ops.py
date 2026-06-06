@@ -71,7 +71,7 @@ async def git_clone_and_diff(repo_url: str, commit_sha: str) -> dict:
             "commit_sha": commit_sha,
         })
 
-    except asyncio.TimeoutError:
+    except TimeoutError:
         return tool_failure("git operation timed out")
     except Exception as e:
         return tool_failure(f"git operation failed: {e}")

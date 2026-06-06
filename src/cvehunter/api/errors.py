@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from enum import Enum
+from datetime import UTC, datetime
+from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
 
-class ErrorCode(str, Enum):
+class ErrorCode(StrEnum):
     VALIDATION_ERROR = "VALIDATION_ERROR"
     RUN_NOT_FOUND = "RUN_NOT_FOUND"
     CVE_ALREADY_RUNNING = "CVE_ALREADY_RUNNING"
@@ -34,7 +34,7 @@ HTTP_STATUS_MAP: dict[ErrorCode, int] = {
 class ErrorResponse(BaseModel):
     error_code: str
     detail: str
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     @classmethod
     def from_code(cls, code: ErrorCode, detail: str) -> ErrorResponse:

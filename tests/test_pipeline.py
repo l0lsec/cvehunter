@@ -2,18 +2,18 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from cvehunter.pipeline import (
     _should_continue_after_builder,
     _should_continue_after_collector,
-    build_pipeline,
     run_pipeline,
 )
 from cvehunter.schemas import (
     CVEPackage,
+    EnvironmentSpec,
     ExploitRecipe,
     ExploitResult,
     JudgementReport,
@@ -52,15 +52,20 @@ def _mock_exploit_result(success: bool = True):
 
 
 def _mock_env():
-    mock = MagicMock()
-    mock.services = ["web"]
-    mock.network_name = "test_default"
-    mock.credentials = {}
-    mock.health_check_passed = True
-    mock.compose_yaml = "version: '3'"
-    mock.flag_value = "CVEHUNTER{test}"
-    mock.patched_network_name = ""
-    return mock
+    # A real EnvironmentSpec (not a MagicMock) so LangGraph's checkpointer can
+    # serialize the graph state.
+    return EnvironmentSpec(
+        cve_id="CVE-2021-44228",
+        vulnerable_image="vuln:1.0",
+        patched_image="",
+        compose_yaml="version: '3'",
+        flag_value="CVEHUNTER{test}",
+        flag_location="/root/flag.txt",
+        network_name="test_default",
+        services=["web"],
+        health_check_passed=True,
+        patched_network_name="",
+    )
 
 
 def _collector_ok(state):
@@ -113,12 +118,13 @@ def _judge_ok(state):
 class TestFullPipelineSuccess:
     async def test_end_to_end(self):
         with (
+            patch("cvehunter.config.settings.researcher_swarm_enabled", False),
             patch("cvehunter.pipeline.run_collector", new_callable=AsyncMock, side_effect=_collector_ok),
             patch("cvehunter.pipeline.run_researcher", new_callable=AsyncMock, side_effect=_researcher_ok),
             patch("cvehunter.pipeline.run_builder", new_callable=AsyncMock, side_effect=_builder_ok),
             patch("cvehunter.pipeline.run_exploiter", new_callable=AsyncMock, side_effect=_exploiter_ok),
             patch("cvehunter.pipeline.run_judge", new_callable=AsyncMock, side_effect=_judge_ok),
-            patch("cvehunter.pipeline.cleanup_environment", new_callable=AsyncMock),
+            patch("cvehunter.pipeline.cleanup_cve_environments", new_callable=AsyncMock),
             patch("cvehunter.pipeline.save_artifacts"),
             patch("cvehunter.pipeline.load_monthly_spend", return_value=0.0),
             patch("cvehunter.pipeline.save_monthly_spend"),
@@ -138,7 +144,7 @@ class TestPipelineCollectorFailure:
         with (
             patch("cvehunter.pipeline.run_collector", new_callable=AsyncMock, side_effect=_collector_fail),
             patch("cvehunter.pipeline.run_judge", new_callable=AsyncMock, side_effect=_judge_ok),
-            patch("cvehunter.pipeline.cleanup_environment", new_callable=AsyncMock),
+            patch("cvehunter.pipeline.cleanup_cve_environments", new_callable=AsyncMock),
             patch("cvehunter.pipeline.save_artifacts"),
             patch("cvehunter.pipeline.load_monthly_spend", return_value=0.0),
             patch("cvehunter.pipeline.save_monthly_spend"),
@@ -158,11 +164,12 @@ class TestPipelineBuilderFailure:
             }
 
         with (
+            patch("cvehunter.config.settings.researcher_swarm_enabled", False),
             patch("cvehunter.pipeline.run_collector", new_callable=AsyncMock, side_effect=_collector_ok),
             patch("cvehunter.pipeline.run_researcher", new_callable=AsyncMock, side_effect=_researcher_ok),
             patch("cvehunter.pipeline.run_builder", new_callable=AsyncMock, side_effect=_builder_fail),
             patch("cvehunter.pipeline.run_judge", new_callable=AsyncMock, side_effect=_judge_ok),
-            patch("cvehunter.pipeline.cleanup_environment", new_callable=AsyncMock),
+            patch("cvehunter.pipeline.cleanup_cve_environments", new_callable=AsyncMock),
             patch("cvehunter.pipeline.save_artifacts"),
             patch("cvehunter.pipeline.load_monthly_spend", return_value=0.0),
             patch("cvehunter.pipeline.save_monthly_spend"),
@@ -188,12 +195,13 @@ class TestPipelineExploiterRetry:
             return _exploiter_ok(state)
 
         with (
+            patch("cvehunter.config.settings.researcher_swarm_enabled", False),
             patch("cvehunter.pipeline.run_collector", new_callable=AsyncMock, side_effect=_collector_ok),
             patch("cvehunter.pipeline.run_researcher", new_callable=AsyncMock, side_effect=_researcher_ok),
             patch("cvehunter.pipeline.run_builder", new_callable=AsyncMock, side_effect=_builder_ok),
             patch("cvehunter.pipeline.run_exploiter", new_callable=AsyncMock, side_effect=_exploiter_retry),
             patch("cvehunter.pipeline.run_judge", new_callable=AsyncMock, side_effect=_judge_ok),
-            patch("cvehunter.pipeline.cleanup_environment", new_callable=AsyncMock),
+            patch("cvehunter.pipeline.cleanup_cve_environments", new_callable=AsyncMock),
             patch("cvehunter.pipeline.save_artifacts"),
             patch("cvehunter.pipeline.load_monthly_spend", return_value=0.0),
             patch("cvehunter.pipeline.save_monthly_spend"),
@@ -222,12 +230,13 @@ class TestPipelineResearcherEscalation:
             return _researcher_ok(state)
 
         with (
+            patch("cvehunter.config.settings.researcher_swarm_enabled", False),
             patch("cvehunter.pipeline.run_collector", new_callable=AsyncMock, side_effect=_collector_ok),
             patch("cvehunter.pipeline.run_researcher", new_callable=AsyncMock, side_effect=_researcher_escalate),
             patch("cvehunter.pipeline.run_builder", new_callable=AsyncMock, side_effect=_builder_ok),
             patch("cvehunter.pipeline.run_exploiter", new_callable=AsyncMock, side_effect=_exploiter_ok),
             patch("cvehunter.pipeline.run_judge", new_callable=AsyncMock, side_effect=_judge_ok),
-            patch("cvehunter.pipeline.cleanup_environment", new_callable=AsyncMock),
+            patch("cvehunter.pipeline.cleanup_cve_environments", new_callable=AsyncMock),
             patch("cvehunter.pipeline.save_artifacts"),
             patch("cvehunter.pipeline.load_monthly_spend", return_value=0.0),
             patch("cvehunter.pipeline.save_monthly_spend"),
@@ -246,7 +255,7 @@ class TestPipelineExceptionCleanup:
 
         with (
             patch("cvehunter.pipeline.run_collector", new_callable=AsyncMock, side_effect=_collector_raise),
-            patch("cvehunter.pipeline.cleanup_environment", cleanup_mock),
+            patch("cvehunter.pipeline.cleanup_cve_environments", cleanup_mock),
             patch("cvehunter.pipeline.save_artifacts"),
             patch("cvehunter.pipeline.load_monthly_spend", return_value=0.0),
             patch("cvehunter.pipeline.save_monthly_spend"),

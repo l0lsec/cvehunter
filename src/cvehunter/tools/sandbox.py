@@ -6,6 +6,7 @@ The exploit container can only reach the target Docker network.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import tempfile
 from pathlib import Path
@@ -72,7 +73,7 @@ async def run_exploit(
     """
     client = _get_client()
     try:
-        _ensure_sandbox_image(client)
+        await asyncio.to_thread(_ensure_sandbox_image, client)
     except Exception as e:
         return {
             "exit_code": -1,
@@ -80,12 +81,26 @@ async def run_exploit(
             "stderr": f"Sandbox image build error: {str(e)}",
         }
 
+    # Fail fast with a clear message if the target network is missing, rather
+    # than a cryptic Docker error when attaching the exploit container.
+    try:
+        await asyncio.to_thread(client.networks.get, target_network)
+    except docker.errors.NotFound:
+        return {
+            "exit_code": -1,
+            "stdout": "",
+            "stderr": f"Target network '{target_network}' not found",
+        }
+    except Exception as e:
+        return {"exit_code": -1, "stdout": "", "stderr": f"Sandbox error: {str(e)}"}
+
     with tempfile.TemporaryDirectory() as tmpdir:
         exploit_path = Path(tmpdir) / "exploit.py"
         exploit_path.write_text(exploit_code)
 
         try:
-            container = client.containers.run(
+            container = await asyncio.to_thread(
+                client.containers.run,
                 image=SANDBOX_IMAGE_TAG,
                 command=["python", "/exploit/exploit.py"],
                 volumes={tmpdir: {"bind": "/exploit", "mode": "ro"}},
@@ -100,13 +115,15 @@ async def run_exploit(
             )
 
             try:
-                result = container.wait(timeout=timeout_seconds)
-                stdout = container.logs(stdout=True, stderr=False).decode(
-                    "utf-8", errors="replace"
+                result = await asyncio.to_thread(container.wait, timeout=timeout_seconds)
+                stdout_bytes = await asyncio.to_thread(
+                    container.logs, stdout=True, stderr=False
                 )
-                stderr = container.logs(stdout=False, stderr=True).decode(
-                    "utf-8", errors="replace"
+                stderr_bytes = await asyncio.to_thread(
+                    container.logs, stdout=False, stderr=True
                 )
+                stdout = stdout_bytes.decode("utf-8", errors="replace")
+                stderr = stderr_bytes.decode("utf-8", errors="replace")
 
                 return {
                     "exit_code": result.get("StatusCode", -1),
@@ -114,17 +131,17 @@ async def run_exploit(
                     "stderr": stderr[:5000],
                 }
             except Exception:
-                container.kill()
+                await asyncio.to_thread(container.kill)
                 return {
                     "exit_code": -1,
                     "stdout": "",
                     "stderr": f"Exploit timed out after {timeout_seconds}s",
                 }
             finally:
-                container.remove(force=True)
+                await asyncio.to_thread(container.remove, force=True)
 
         except docker.errors.ImageNotFound:
-            _ensure_sandbox_image(client)
+            await asyncio.to_thread(_ensure_sandbox_image, client)
             return await run_exploit(
                 exploit_code, target_network, timeout_seconds, container_name
             )

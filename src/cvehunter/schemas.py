@@ -177,3 +177,5 @@ class GraphState(TypedDict, total=False):
     researcher_attempts: int
     researcher_escalated: bool
     researcher_needs_escalation: bool
+    current_stage: str | None
+    stages_completed: list[str]
