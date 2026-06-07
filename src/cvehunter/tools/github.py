@@ -41,9 +41,13 @@ async def search_github_commits(query: str) -> dict:
             )
             response.raise_for_status()
             data = response.json()
+            if not isinstance(data, dict):
+                return tool_failure("Unexpected GitHub API response format")
 
             commits = []
-            for item in data.get("items", []):
+            for item in data.get("items") or []:
+                if not isinstance(item, dict):
+                    continue
                 commits.append({
                     "sha": item.get("sha", ""),
                     "message": item.get("commit", {}).get("message", "")[:500],

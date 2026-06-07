@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}Status &mdash; CVEHunter{% endblock %}
+
+{% block content %}
+<section>
+  <h2>Configuration</h2>
+  <div class="detail-grid">
+    <article>
+      <header>API Keys</header>
+      <table>
+        <tbody>
+          {% for name, present in keys.items() %}
+          <tr>
+            <td>{{ name }}</td>
+            <td>
+              {% if present %}
+                <span class="status-completed">Set</span>
+              {% else %}
+                <span class="status-error">Not set</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <footer><small>Only Anthropic is required; others are optional.</small></footer>
+    </article>
+
+    <article>
+      <header>Settings</header>
+      <table>
+        <tbody>
+          <tr><td>Researcher Swarm</td>
+            <td>{% if settings.researcher_swarm_enabled %}<span class="status-completed">enabled</span>{% else %}<span class="status-cancelled">disabled</span>{% endif %}</td></tr>
+          <tr><td>LangSmith Tracing</td>
+            <td>{% if settings.langsmith_enabled %}<span class="status-completed">enabled</span>{% else %}<span class="status-cancelled">disabled</span>{% endif %}</td></tr>
+          <tr><td>Max Cost / CVE</td><td class="mono">${{ "%.2f" | format(settings.max_cost_per_cve) }}</td></tr>
+          <tr><td>Max Monthly Spend</td><td class="mono">${{ "%.2f" | format(settings.max_monthly_spend) }}</td></tr>
+          <tr><td>Docker Host</td><td class="mono">{{ settings.docker_host }}</td></tr>
+          <tr><td>Artifact Dir</td><td class="mono">{{ settings.artifact_dir }}</td></tr>
+        </tbody>
+      </table>
+    </article>
+  </div>
+</section>
+
+<section>
+  <h3>Agent &rarr; Model Mapping</h3>
+  <figure>
+    <table>
+      <thead>
+        <tr><th>Agent</th><th>Tier</th><th>Model</th><th>Cost (in / out per 1M)</th></tr>
+      </thead>
+      <tbody>
+        {% for m in agent_models %}
+        <tr>
+          <td>{{ m.agent }}</td>
+          <td><span class="score-badge {% if m.tier == 'heavy' %}score-high{% elif m.tier == 'smart' %}score-medium{% else %}score-low{% endif %}">{{ m.tier }}</span></td>
+          <td class="mono">{{ m.model }}</td>
+          <td class="mono">${{ "%.2f" | format(m.cost_in) }} / ${{ "%.2f" | format(m.cost_out) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </figure>
+</section>
+{% endblock %}

@@ -6,6 +6,7 @@ All exploit environments run in isolated Docker networks with no internet access
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import os
@@ -44,7 +45,8 @@ async def build_image(dockerfile_content: str, tag: str) -> dict:
             dockerfile_path = Path(tmpdir) / "Dockerfile"
             dockerfile_path.write_text(dockerfile_content)
 
-            image, build_logs = client.images.build(
+            image, build_logs = await asyncio.to_thread(
+                client.images.build,
                 path=tmpdir,
                 tag=tag,
                 rm=True,
@@ -82,6 +84,70 @@ def _inject_container_names(compose_yaml: str, name_prefix: str) -> str:
         if isinstance(svc, dict):
             svc["container_name"] = f"{name_prefix}-{svc_name}"
     return yaml.safe_dump(doc, sort_keys=False)
+
+
+def _force_internal_networks(compose_yaml: str) -> str:
+    """Force ``internal: true`` on every project network in a compose YAML.
+
+    The vulnerable lab must never reach the internet. Docker's ``internal``
+    flag drops the network's gateway so attached containers cannot egress,
+    while still permitting traffic *within* the network. The sandbox attaches
+    the exploit container to this same network, so exploit→target traffic still
+    flows, and the target can still reach a listener the exploit container hosts
+    (e.g. a JNDI LDAP/HTTP callback for Log4Shell) — only outbound internet is
+    blocked. Build-time networking (image pulls, ``RUN apt-get``) is unaffected
+    because the ``internal`` flag governs runtime container networking, not the
+    BuildKit build context.
+
+    Mirrors ``_strip_host_ports``: parse, rewrite, re-dump; return the original
+    text unchanged if anything is unparseable. Services that declare no
+    ``networks:`` key join the implicit ``default`` network, so when any service
+    relies on it we declare ``default`` explicitly and mark it internal too.
+    Pre-existing ``external: true`` networks are user-managed and left untouched.
+    """
+    try:
+        doc = yaml.safe_load(compose_yaml)
+    except yaml.YAMLError:
+        return compose_yaml
+    if not isinstance(doc, dict) or not isinstance(doc.get("services"), dict):
+        return compose_yaml
+
+    raw_networks = doc.get("networks")
+    networks = raw_networks if isinstance(raw_networks, dict) else {}
+
+    normalized: dict[str, Any] = {}
+    for net_name, net_cfg in networks.items():
+        cfg = dict(net_cfg) if isinstance(net_cfg, dict) else {}
+        # Leave external networks alone — we don't own them and can't toggle
+        # their isolation flag.
+        if not cfg.get("external"):
+            cfg["internal"] = True
+        normalized[net_name] = cfg
+
+    # A service with no explicit ``networks:`` key falls back to the implicit
+    # ``default`` network; ensure it exists and is isolated. Only add it when a
+    # service actually relies on it, so we don't create a spurious unused
+    # network that ``_query_compose_network`` might pick over the real one.
+    services = doc["services"]
+    uses_default = any(
+        not (isinstance(svc, dict) and svc.get("networks"))
+        for svc in services.values()
+    )
+    if uses_default and "default" not in normalized:
+        normalized["default"] = {"internal": True}
+
+    if not normalized:
+        return compose_yaml
+    doc["networks"] = normalized
+    return yaml.safe_dump(doc, sort_keys=False)
+
+
+def _compose_needs_dockerfile(parsed_compose: dict) -> bool:
+    """True if any service builds from a local context (needs a Dockerfile)."""
+    services = parsed_compose.get("services")
+    if not isinstance(services, dict):
+        return False
+    return any(isinstance(svc, dict) and "build" in svc for svc in services.values())
 
 
 def _query_compose_containers(project_name: str) -> list[dict[str, str]]:
@@ -154,14 +220,35 @@ async def compose_up(
         Running container IDs and network info.
     """
     try:
+        # Validate the compose YAML up front so the builder gets an actionable
+        # error instead of a cryptic Docker daemon failure.
+        try:
+            parsed_compose = yaml.safe_load(compose_yaml)
+        except yaml.YAMLError as e:
+            return tool_failure(f"Invalid compose YAML: {e}")
+        if not isinstance(parsed_compose, dict) or not parsed_compose.get("services"):
+            return tool_failure("Invalid compose YAML: no 'services' section found")
+        if not dockerfile_content and _compose_needs_dockerfile(parsed_compose):
+            return tool_failure(
+                "Compose has a service with a 'build:' section but dockerfile_content "
+                "is empty. Provide the full Dockerfile contents in dockerfile_content "
+                "(the only build context is the Dockerfile itself)."
+            )
+
         effective_yaml = _inject_container_names(compose_yaml, name_prefix)
+        # Choke point for network isolation: force every project network
+        # ``internal: true`` regardless of what the builder LLM emitted, so the
+        # vulnerable (and patched) lab cannot reach the internet. Applies to all
+        # callers — initial up, LLM retries, and the patched env.
+        effective_yaml = _force_internal_networks(effective_yaml)
         with tempfile.TemporaryDirectory() as tmpdir:
             compose_path = Path(tmpdir) / "docker-compose.yml"
             compose_path.write_text(effective_yaml)
             if dockerfile_content:
                 (Path(tmpdir) / "Dockerfile").write_text(dockerfile_content)
 
-            result = subprocess.run(
+            result = await asyncio.to_thread(
+                subprocess.run,
                 ["docker", "compose", "-f", str(compose_path), "-p", project_name, "up", "-d"],
                 capture_output=True,
                 text=True,
@@ -171,8 +258,8 @@ async def compose_up(
             if result.returncode != 0:
                 return tool_failure(f"Compose up failed: {result.stderr}")
 
-            containers = _query_compose_containers(project_name)
-            network_name = _query_compose_network(project_name)
+            containers = await asyncio.to_thread(_query_compose_containers, project_name)
+            network_name = await asyncio.to_thread(_query_compose_network, project_name)
 
             return tool_success({
                 "project_name": project_name,
@@ -201,17 +288,18 @@ async def health_check(
     """
     client = _get_client()
     try:
-        container = client.containers.get(container_name)
+        container = await asyncio.to_thread(client.containers.get, container_name)
         attempts = settings.health_check_attempts
         delay = settings.health_check_delay_seconds
         last_exit = -1
         last_out = b""
         for _ in range(max(attempts, 1)):
-            last_exit, last_out = container.exec_run(["sh", "-c", check_command])
+            last_exit, last_out = await asyncio.to_thread(
+                container.exec_run, ["sh", "-c", check_command]
+            )
             if last_exit == 0:
                 break
-            import time as _time
-            _time.sleep(delay)
+            await asyncio.sleep(delay)
         return tool_success({
             "healthy": last_exit == 0,
             "exit_code": last_exit,
@@ -329,15 +417,19 @@ async def insert_flag(
     """
     client = _get_client()
     try:
-        container = client.containers.get(container_name)
+        container = await asyncio.to_thread(client.containers.get, container_name)
 
         if flag_location.startswith("http"):
             return tool_success({"status": "flag_in_service", "location": flag_location})
 
         if "database" in flag_location.lower() or "INSERT" in flag_location:
-            return _insert_flag_into_db(client, project_name, flag_value)
+            return await asyncio.to_thread(
+                _insert_flag_into_db, client, project_name, flag_value
+            )
 
-        return _write_file_to_container(container, flag_location, flag_value)
+        return await asyncio.to_thread(
+            _write_file_to_container, container, flag_location, flag_value
+        )
 
     except Exception as e:
         return tool_failure(f"Flag insertion error: {str(e)}")
@@ -351,7 +443,7 @@ async def verify_network_isolation(network_name: str) -> dict[str, Any]:
     """
     client = _get_client()
     try:
-        network = client.networks.get(network_name)
+        network = await asyncio.to_thread(client.networks.get, network_name)
         is_internal = network.attrs.get("Internal", False)
 
         if not is_internal:
@@ -365,7 +457,8 @@ async def verify_network_isolation(network_name: str) -> dict[str, Any]:
 
         probe_passed = True
         try:
-            client.containers.run(
+            await asyncio.to_thread(
+                client.containers.run,
                 "alpine:3.20",
                 command="wget -q --spider --timeout=3 http://1.1.1.1",
                 network=network_name,
@@ -408,17 +501,36 @@ async def tail_container_logs(container_name: str, lines: int = 200) -> str:
     """Return recent logs from a target container for exploit retry feedback."""
     client = _get_client()
     try:
-        container = client.containers.get(container_name)
-        raw = container.logs(stdout=True, stderr=True, tail=max(lines, 1))
+        container = await asyncio.to_thread(client.containers.get, container_name)
+        raw = await asyncio.to_thread(
+            container.logs, stdout=True, stderr=True, tail=max(lines, 1)
+        )
         return raw.decode("utf-8", errors="replace")
     except Exception as e:
         return f"(could not read logs from {container_name}: {e})"
 
 
-async def cleanup_environment(project_name: str) -> dict[str, Any]:
-    """Tear down all containers and networks for a CVE run."""
+async def inspect_container_running(container_name: str) -> bool:
+    """Return True if the named container exists and is in the 'running' state.
+
+    Used as a fallback when the readiness probe is inconclusive: a service that
+    is actually up shouldn't be discarded because an in-container probe binary
+    (e.g. a broken curl) failed.
+    """
+    client = _get_client()
     try:
-        result = subprocess.run(
+        container = await asyncio.to_thread(client.containers.get, container_name)
+        await asyncio.to_thread(container.reload)
+        return container.status == "running"
+    except Exception:
+        return False
+
+
+async def cleanup_environment(project_name: str) -> dict[str, Any]:
+    """Tear down all containers and networks for a single compose project."""
+    try:
+        result = await asyncio.to_thread(
+            subprocess.run,
             ["docker", "compose", "-p", project_name, "down", "-v", "--remove-orphans"],
             capture_output=True,
             text=True,
@@ -430,3 +542,46 @@ async def cleanup_environment(project_name: str) -> dict[str, Any]:
         return tool_failure(f"Cleanup failed (exit {result.returncode})", output=output)
     except Exception as e:
         return tool_failure(f"Cleanup error: {str(e)}")
+
+
+async def cleanup_cve_environments(cve_id: str) -> dict[str, Any]:
+    """Tear down every compose project created for a CVE, across all run hashes.
+
+    The builder names projects ``cvehunter-<cve-slug>-<run_hash>`` (and a
+    ``-patched-`` variant), so a fixed project name can't target them — and a
+    cancelled run never reveals its random hash. We instead enumerate compose
+    projects via ``docker compose ls`` and down every one whose name belongs to
+    this CVE. This is what guarantees no containers/networks leak after a run.
+
+    Matching is by the (globally unique) CVE slug substring rather than only the
+    ``cvehunter-`` prefix, so a project the LLM's compose named itself (e.g.
+    ``cve-2021-41773``) is still torn down.
+    """
+    cve_slug = cve_id.lower()
+    try:
+        result = await asyncio.to_thread(
+            subprocess.run,
+            ["docker", "compose", "ls", "--all", "--format", "json"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        projects: list[str] = []
+        if result.returncode == 0 and result.stdout.strip():
+            try:
+                data = json.loads(result.stdout)
+                if isinstance(data, list):
+                    projects = [
+                        p.get("Name", "")
+                        for p in data
+                        if isinstance(p, dict) and p.get("Name")
+                    ]
+            except json.JSONDecodeError:
+                projects = []
+
+        targets = [p for p in projects if cve_slug in p.lower()]
+        for proj in targets:
+            await cleanup_environment(proj)
+        return tool_success({"status": "cleaned", "cleaned_projects": targets})
+    except Exception as e:
+        return tool_failure(f"CVE cleanup error: {str(e)}")

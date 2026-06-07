@@ -119,13 +119,13 @@ async def test_build_report_respects_keys_and_wiring(monkeypatch):
 
     by_tier = {m.tier: m for m in report.models}
 
+    # All tiers default to Anthropic now; Anthropic has no public balance endpoint.
     cheap = by_tier["cheap"]
-    assert cheap.provider == "deepseek"
+    assert cheap.provider == "anthropic"
     assert cheap.active is True
     assert cheap.balance is not None
-    assert cheap.balance.source == "live"
-    assert cheap.balance.total == pytest.approx(7.77)
-    assert cheap.billing_url == BILLING_URLS["deepseek"]
+    assert cheap.balance.source == "unavailable"
+    assert cheap.billing_url == BILLING_URLS["anthropic"]
     assert "collector" in cheap.assigned_agents
     assert "builder" in cheap.assigned_agents
     assert "judge" in cheap.assigned_agents
@@ -179,6 +179,7 @@ def test_api_llms_endpoint_smoke(monkeypatch):
     """GET /api/v1/llms returns the report as JSON."""
     from cvehunter.api import routes as api_routes
     from cvehunter.api.main import app
+    from cvehunter.config import settings as cfg_settings
 
     fake_report = LLMStatusReport(
         models=[],
@@ -195,7 +196,7 @@ def test_api_llms_endpoint_smoke(monkeypatch):
         return fake_report
 
     monkeypatch.setattr(api_routes, "build_report", _fake_build_report)
-    monkeypatch.setattr(api_routes.settings, "api_key", "")
+    monkeypatch.setattr(cfg_settings, "api_key", "")
 
     client = TestClient(app)
     resp = client.get("/api/v1/llms")

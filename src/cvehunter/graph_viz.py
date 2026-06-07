@@ -31,7 +31,11 @@ def primitives_to_mermaid(graph: PrimitivesGraph) -> str:
         safe_id = _sanitize_id(node_id)
         conf_pct = int(prim.confidence * 100)
         label = f"{prim.name} ({conf_pct}%)"
-        escaped_label = label.replace('"', "'")
+        # Backslashes, double-quotes, and newlines all break Mermaid's
+        # ["..."] node-label syntax.
+        escaped_label = (
+            label.replace("\\", " ").replace('"', "'").replace("\n", " ")
+        )
 
         if node_id in chain_node_ids:
             lines.append(f'    {safe_id}["{escaped_label}"]:::chain')

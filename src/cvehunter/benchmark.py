@@ -9,7 +9,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -17,7 +16,12 @@ from typing import Any
 from rich.console import Console
 from rich.table import Table
 
-BENCHMARKS_PATH = Path(__file__).resolve().parent.parent.parent / "tests" / "benchmarks" / "known_cves.json"
+BENCHMARKS_PATH = (
+    Path(__file__).resolve().parent.parent.parent / "tests" / "benchmarks" / "known_cves.json"
+)
+
+# Pipeline statuses that count as a completed assessment.
+_SUCCESS_STATUSES = {"judged", "completed", "approved_by_human"}
 
 console = Console()
 
@@ -98,7 +102,7 @@ def print_summary(results: list[dict[str, Any]]) -> None:
     for r in results:
         score = f"{r['exploitability_score']:.1f}" if r["exploitability_score"] is not None else "-"
         flag = "Y" if r["flag_captured"] else "N"
-        status_style = "green" if r["status"] == "judged" else "red"
+        status_style = "green" if r["status"] in _SUCCESS_STATUSES else "red"
         table.add_row(
             r["cve_id"],
             r["name"],
@@ -187,7 +191,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--type",
-        dest="vuln_type",
+        dest="filter_type",
         help="Filter benchmarks by vulnerability type (e.g., rce, sqli)",
     )
     parser.add_argument(
@@ -205,7 +209,7 @@ def main() -> None:
     asyncio.run(
         run_benchmarks(
             filter_difficulty=args.difficulty,
-            filter_type=args.vuln_type,
+            filter_type=args.filter_type,
             dry_run=args.dry_run,
             output=args.output,
         )

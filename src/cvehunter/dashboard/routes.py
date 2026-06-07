@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
+import html
 import json
 from typing import Any
 
 import structlog
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
-from cvehunter.api import routes as api_routes
+from cvehunter.api import run_service
 from cvehunter.api.database import get_run, list_runs
+from cvehunter.api.run_service import RunServiceError
 from cvehunter.graph_viz import primitives_to_mermaid
 from cvehunter.llm_status import build_report
 from cvehunter.pipeline import CANONICAL_STAGES, checkpoint_db_path
@@ -176,13 +178,52 @@ def build_dashboard_router(templates: Jinja2Templates) -> APIRouter:
             request, "partials/run_row.html", {"run": run}
         )
 
+    def _result_card(message: str, *, error: bool = False) -> HTMLResponse:
+        cls = "status-error" if error else "status-completed"
+        return HTMLResponse(
+            f'<article class="{cls}"><small>{html.escape(message)}</small></article>'
+        )
+
+    @router.post("/actions/submit")
+    async def action_submit(
+        request: Request, background_tasks: BackgroundTasks
+    ) -> HTMLResponse:
+        form = await request.form()
+        cve_id = str(form.get("cve_id", "")).strip().upper()
+        simple = str(form.get("simple_researcher", "")) in ("on", "true", "1")
+        try:
+            await run_service.launch_run(
+                cve_id, background_tasks, simple_researcher=simple
+            )
+        except RunServiceError as exc:
+            return _result_card(exc.detail, error=True)
+        except Exception:
+            logger.exception("dashboard_submit_failed", cve_id=cve_id)
+            return _result_card("Failed to start run; check server logs.", error=True)
+        return _result_card(f"Started analysis for {cve_id}. It will appear below.")
+
+    @router.post("/actions/collect")
+    async def action_collect(
+        request: Request, background_tasks: BackgroundTasks
+    ) -> HTMLResponse:
+        form = await request.form()
+        cve_id = str(form.get("cve_id", "")).strip().upper()
+        try:
+            await run_service.collect_only(cve_id, background_tasks)
+        except RunServiceError as exc:
+            return _result_card(exc.detail, error=True)
+        except Exception:
+            logger.exception("dashboard_collect_failed", cve_id=cve_id)
+            return _result_card("Failed to start collector; check server logs.", error=True)
+        return _result_card(f"Collecting CVE data for {cve_id}. It will appear below.")
+
     @router.post("/actions/cancel/{cve_id}")
     async def action_cancel(request: Request, cve_id: str) -> HTMLResponse:
         cve_id = cve_id.upper()
         try:
-            await api_routes.cancel_run(cve_id)
-        except HTTPException as exc:
-            logger.info("dashboard_cancel_noop", cve_id=cve_id, detail=str(exc.detail))
+            await run_service.cancel_run(cve_id)
+        except RunServiceError as exc:
+            logger.info("dashboard_cancel_noop", cve_id=cve_id, detail=exc.detail)
         except Exception:
             logger.exception("dashboard_cancel_failed", cve_id=cve_id)
         return await _respond_with_row(request, cve_id)
@@ -195,9 +236,9 @@ def build_dashboard_router(templates: Jinja2Templates) -> APIRouter:
     ) -> HTMLResponse:
         cve_id = cve_id.upper()
         try:
-            await api_routes.retry_run(cve_id, background_tasks)
-        except HTTPException as exc:
-            logger.info("dashboard_retry_noop", cve_id=cve_id, detail=str(exc.detail))
+            await run_service.retry_run(cve_id, background_tasks)
+        except RunServiceError as exc:
+            logger.info("dashboard_retry_noop", cve_id=cve_id, detail=exc.detail)
         except Exception:
             logger.exception("dashboard_retry_failed", cve_id=cve_id)
         return await _respond_with_row(request, cve_id)
@@ -210,12 +251,62 @@ def build_dashboard_router(templates: Jinja2Templates) -> APIRouter:
     ) -> HTMLResponse:
         cve_id = cve_id.upper()
         try:
-            await api_routes.resume_run(cve_id, background_tasks)
-        except HTTPException as exc:
-            logger.info("dashboard_resume_noop", cve_id=cve_id, detail=str(exc.detail))
+            await run_service.resume_run(cve_id, background_tasks)
+        except RunServiceError as exc:
+            logger.info("dashboard_resume_noop", cve_id=cve_id, detail=exc.detail)
         except Exception:
             logger.exception("dashboard_resume_failed", cve_id=cve_id)
         return await _respond_with_row(request, cve_id)
+
+    @router.post("/actions/hitl/{cve_id}")
+    async def action_hitl(
+        request: Request,
+        cve_id: str,
+        background_tasks: BackgroundTasks,
+    ) -> HTMLResponse:
+        cve_id = cve_id.upper()
+        form = await request.form()
+        action = str(form.get("action", "approve"))
+        notes = str(form.get("notes", ""))
+        try:
+            await run_service.hitl_respond(cve_id, background_tasks, action, notes)
+        except RunServiceError as exc:
+            logger.info("dashboard_hitl_noop", cve_id=cve_id, detail=exc.detail)
+        except Exception:
+            logger.exception("dashboard_hitl_failed", cve_id=cve_id)
+        return await _respond_with_row(request, cve_id)
+
+    @router.get("/status")
+    async def dashboard_status(request: Request) -> HTMLResponse:
+        from cvehunter.config import AGENT_MODEL_MAPPING, MODELS, settings
+
+        keys = {
+            "Anthropic": bool(settings.anthropic_api_key),
+            "DeepSeek (optional)": bool(settings.deepseek_api_key),
+            "Google (optional)": bool(settings.google_api_key),
+            "OpenAI (optional)": bool(settings.openai_api_key),
+            "NVD": bool(settings.nvd_api_key),
+            "GitHub": bool(settings.github_token),
+        }
+        agent_models = [
+            {
+                "agent": agent,
+                "tier": tier.value,
+                "model": MODELS[tier].model_name,
+                "cost_in": MODELS[tier].cost_per_1m_input,
+                "cost_out": MODELS[tier].cost_per_1m_output,
+            }
+            for agent, tier in AGENT_MODEL_MAPPING.items()
+        ]
+        return templates.TemplateResponse(
+            request,
+            "status.html",
+            {
+                "settings": settings,
+                "keys": keys,
+                "agent_models": agent_models,
+            },
+        )
 
     @router.get("/{cve_id}")
     async def dashboard_detail(request: Request, cve_id: str) -> HTMLResponse:

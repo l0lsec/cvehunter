@@ -8,7 +8,7 @@ and the dashboard.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import httpx
 import structlog
@@ -147,7 +147,7 @@ def _spend_summary() -> SpendSummary:
     monthly = load_monthly_spend()
     cap = settings.max_monthly_spend
     return SpendSummary(
-        month=datetime.now(timezone.utc).strftime("%Y-%m"),
+        month=datetime.now(UTC).strftime("%Y-%m"),
         monthly_spend_usd=round(monthly, 6),
         monthly_cap_usd=cap,
         monthly_remaining_usd=round(max(cap - monthly, 0.0), 6),

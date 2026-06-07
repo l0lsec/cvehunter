@@ -11,7 +11,7 @@ import argparse
 import asyncio
 import sqlite3
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +22,9 @@ from rich.table import Table
 from cvehunter.config import settings
 
 KEV_FEED_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
+
+# Pipeline statuses that count as a completed assessment.
+_SUCCESS_STATUSES = {"judged", "completed", "approved_by_human"}
 
 console = Console()
 
@@ -71,7 +74,7 @@ def _save_result(db: sqlite3.Connection, record: dict[str, Any]) -> None:
             record.get("exploitability_score"),
             record.get("cost_usd", 0.0),
             record.get("elapsed_s", 0.0),
-            datetime.now(timezone.utc).isoformat(),
+            datetime.now(UTC).isoformat(),
             record.get("error"),
         ),
     )
@@ -80,10 +83,17 @@ def _save_result(db: sqlite3.Connection, record: dict[str, Any]) -> None:
 
 async def fetch_kev_catalog() -> list[dict[str, Any]]:
     """Download the CISA KEV catalog and return the vulnerability list."""
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.get(KEV_FEED_URL)
-        resp.raise_for_status()
-        data = resp.json()
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(KEV_FEED_URL)
+            resp.raise_for_status()
+            data = resp.json()
+    except httpx.HTTPError as e:
+        console.print(
+            f"[red]Could not fetch the CISA KEV catalog: {e}[/red]\n"
+            "[dim]Check your network connection and try again.[/dim]"
+        )
+        return []
     return data.get("vulnerabilities", [])
 
 
@@ -91,7 +101,7 @@ async def _run_single_kev(kev_entry: dict[str, Any]) -> dict[str, Any]:
     """Run the pipeline for one KEV entry and capture metrics."""
     from cvehunter.pipeline import run_pipeline
 
-    cve_id = kev_entry["cveID"]
+    cve_id = kev_entry["cveID"].strip().upper()
     record: dict[str, Any] = {
         "cve_id": cve_id,
         "vendor": kev_entry.get("vendorProject", ""),
@@ -137,7 +147,7 @@ def _print_summary(results: list[dict[str, Any]]) -> None:
             if r["exploitability_score"] is not None
             else "-"
         )
-        status_style = "green" if r["status"] == "judged" else "red"
+        status_style = "green" if r["status"] in _SUCCESS_STATUSES else "red"
         table.add_row(
             r["cve_id"],
             r.get("vendor", ""),
@@ -151,7 +161,7 @@ def _print_summary(results: list[dict[str, Any]]) -> None:
     console.print(table)
 
     total = len(results)
-    successes = sum(1 for r in results if r["status"] == "judged")
+    successes = sum(1 for r in results if r["status"] in _SUCCESS_STATUSES)
     total_cost = sum(r["cost_usd"] for r in results)
     console.print(f"\n[bold]Summary:[/bold] {successes}/{total} KEVs processed successfully")
     console.print(f"Total cost: ${total_cost:.2f}")

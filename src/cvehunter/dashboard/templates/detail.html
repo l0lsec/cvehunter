@@ -11,7 +11,7 @@
   </p>
 </hgroup>
 
-{% if run.status in ("error", "cancelled", "judged_partial", "completed", "rejected_by_human", "approved_by_human") %}
+{% if run.status in ("error", "cancelled", "judged_partial", "completed", "collected", "collected_incomplete", "rejected_by_human", "approved_by_human") %}
 <div style="display:flex;gap:.5rem;margin-bottom:1rem">
   <button hx-post="/dashboard/actions/retry/{{ run.cve_id }}"
           hx-swap="none"
@@ -45,18 +45,23 @@
 <article>
   <header>Awaiting Human Review</header>
   <p>The Judge flagged this run for human-in-the-loop review before finalizing.</p>
-  <div style="display:flex;gap:1rem;margin-top:1rem">
-    <form method="post" action="/api/v1/hitl/{{ run.cve_id }}" id="hitl-form">
-      <input type="hidden" name="action" id="hitl-action" value="approve" />
-      <input type="hidden" name="notes" id="hitl-notes" value="" />
-    </form>
-    <button class="outline" onclick="document.getElementById('hitl-action').value='approve';document.getElementById('hitl-form').submit()">
-      Approve
-    </button>
-    <button class="outline secondary" onclick="var n=prompt('Rejection reason:','');if(n!==null){document.getElementById('hitl-action').value='reject';document.getElementById('hitl-notes').value=n;document.getElementById('hitl-form').submit();}">
-      Reject
-    </button>
-  </div>
+  <form id="hitl-form"
+        hx-post="/dashboard/actions/hitl/{{ run.cve_id }}"
+        hx-swap="none"
+        hx-on::after-request="window.location.reload()">
+    <input type="hidden" name="action" id="hitl-action" value="approve" />
+    <input type="hidden" name="notes" id="hitl-notes" value="" />
+    <div style="display:flex;gap:1rem;margin-top:1rem">
+      <button type="button" class="outline"
+              onclick="document.getElementById('hitl-action').value='approve';document.getElementById('hitl-notes').value='';this.closest('form').requestSubmit();">
+        Approve
+      </button>
+      <button type="button" class="outline secondary"
+              onclick="var n=prompt('Rejection reason:','');if(n!==null){document.getElementById('hitl-action').value='reject';document.getElementById('hitl-notes').value=n;this.closest('form').requestSubmit();}">
+        Reject
+      </button>
+    </div>
+  </form>
 </article>
 {% else %}
 

@@ -1,6 +1,6 @@
 """Collector Agent — gathers CVE data, patch diffs, and metadata.
 
-LLM Tier: CHEAP (DeepSeek V4 Flash)
+LLM Tier: CHEAP (Claude Haiku 4.5)
 Input: CVE ID string
 Output: CVEPackage
 """
@@ -11,19 +11,18 @@ from typing import Any
 
 import structlog
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
-from langchain_core.tools import tool
-
-logger = structlog.get_logger(__name__)
 
 from cvehunter.config import ModelTier
-from cvehunter.llm_router import extract_cost, get_model
-from cvehunter.schemas import CVEPackage, PipelineState
+from cvehunter.llm_router import extract_cost, get_model, structured_call
+from cvehunter.schemas import CVEPackage
 from cvehunter.tools.advisory import scrape_advisory
 from cvehunter.tools.git_ops import git_clone_and_diff
 from cvehunter.tools.github import get_commit_diff, search_github_commits
 from cvehunter.tools.nvd import fetch_cve
 from cvehunter.tools.osv import fetch_osv
-from cvehunter.tools.url_validation import ALLOWED_DOMAINS, validate_url
+from cvehunter.tools.url_validation import validate_url
+
+logger = structlog.get_logger(__name__)
 
 COLLECTOR_SYSTEM_PROMPT = """\
 You are a vulnerability data collector. Given a CVE ID, gather all relevant information
@@ -124,9 +123,9 @@ async def run_collector(state: dict[str, Any]) -> dict[str, Any]:
 
     # Build a clean extraction context from tool outputs instead of reusing the
     # tool-loop history. The COLLECTOR_SYSTEM_PROMPT names data-gathering tools
-    # (get_commit_diff, git_clone_and_diff, etc.); reusing it here makes
-    # DeepSeek emit tool_calls with those names even though only ``CVEPackage``
-    # is bound, which the PydanticToolsParser rejects. Use a focused
+    # (get_commit_diff, git_clone_and_diff, etc.); reusing it here can make the
+    # model emit tool_calls with those names even though only ``CVEPackage`` is
+    # bound, which the structured-output parser rejects. Use a focused
     # extraction-only system prompt with no tool references.
     tool_outputs: list[str] = []
     for m in messages:
@@ -152,12 +151,43 @@ async def run_collector(state: dict[str, Any]) -> dict[str, Any]:
         ),
     ]
 
-    # DeepSeek's Chat Completions endpoint does not currently support the
-    # default json_schema response_format, so we pin to function_calling.
+    # Pin to function_calling: it works across providers and returns the raw
+    # message so ``structured_call`` can record token cost (the parsed model
+    # alone carries no usage metadata).
     base_llm = get_model("collector")
-    structured_llm = base_llm.with_structured_output(CVEPackage, method="function_calling")
-    cve_package = await structured_llm.ainvoke(extraction_messages)
-    run_cost += extract_cost(cve_package, tier) if hasattr(cve_package, "usage_metadata") else 0.0
+    cve_package, extract_cost_usd = await structured_call(
+        base_llm, CVEPackage, extraction_messages, tier
+    )
+    run_cost += extract_cost_usd
+
+    if cve_package is None:
+        return {
+            "cve_package": None,
+            "status": "collection_failed",
+            "errors": state.get("errors", [])
+            + [f"Collector could not extract a CVEPackage for {cve_id}"],
+            "total_cost_usd": run_cost,
+        }
+
+    # Validate the extracted package so we don't propagate junk downstream.
+    if cve_package.cve_id.strip().upper() != cve_id.upper():
+        cve_package.cve_id = cve_id  # normalize to the requested CVE ID
+    incomplete = [
+        field
+        for field, value in (
+            ("affected_software", cve_package.affected_software),
+            ("language", cve_package.language),
+        )
+        if not value.strip()
+    ]
+    if incomplete:
+        return {
+            "cve_package": cve_package,
+            "status": "collected_incomplete",
+            "errors": state.get("errors", [])
+            + [f"Collector output missing required fields: {', '.join(incomplete)}"],
+            "total_cost_usd": run_cost,
+        }
 
     return {
         "cve_package": cve_package,

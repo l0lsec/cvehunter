@@ -1,4 +1,4 @@
-"""CLI entry point for CVEHunter."""
+"""CLI entry point for CVEHunter (argparse-based)."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import asyncio
 import json
 import sys
 
+from langgraph.errors import GraphInterrupt
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -105,6 +106,28 @@ async def _run_pipeline(cve_id: str, output_file: str | None) -> None:
     try:
         result = await run_pipeline(cve_id)
 
+        # When the Judge flags medium/high HITL, the graph pauses at the gate;
+        # ainvoke returns the state with an "__interrupt__" marker. Surface it
+        # and tell the user how to resume instead of pretending the run finished.
+        if isinstance(result, dict) and result.get("__interrupt__"):
+            console.print(
+                Panel(
+                    f"[bold yellow]Paused for human review[/bold yellow]\n"
+                    f"The Judge flagged {cve_id} for human-in-the-loop review.\n\n"
+                    f"Approve: [cyan]cvehunter approve {cve_id}[/cyan]\n"
+                    f"Reject:  [cyan]cvehunter reject {cve_id}[/cyan]",
+                    style="yellow",
+                )
+            )
+            judgement = result.get("judgement")
+            if judgement:
+                console.print(
+                    f"\n[bold]Provisional score:[/bold] {judgement.exploitability_score}"
+                    f"  [bold]HITL level:[/bold] {judgement.hitl_level}"
+                )
+                console.print(f"[bold]Summary:[/bold] {judgement.summary}")
+            return
+
         judgement = result.get("judgement")
         if judgement:
             table = Table(title="Judgement Report")
@@ -124,6 +147,12 @@ async def _run_pipeline(cve_id: str, output_file: str | None) -> None:
                 json.dump(result, f, indent=2, default=str)
             console.print(f"\nReport saved to: {output_file}")
 
+    except GraphInterrupt:
+        console.print(
+            f"[yellow]Pipeline paused at the HITL gate. "
+            f"Use 'cvehunter approve {cve_id}' or 'cvehunter reject {cve_id}' to resume.[/yellow]"
+        )
+        return
     except Exception as e:
         console.print(f"[red]Pipeline failed: {e}[/red]")
         sys.exit(1)
@@ -164,8 +193,8 @@ async def _hitl_respond(cve_id: str, *, action: str, notes: str) -> None:
 
 
 async def _run_collector(cve_id: str) -> None:
-    from cvehunter.config import settings
     from cvehunter.agents.collector import run_collector
+    from cvehunter.config import settings
 
     settings.validate_keys()
     console.print(Panel(f"[bold]Collector Agent[/bold]\nTarget: {cve_id}", style="blue"))
@@ -173,8 +202,14 @@ async def _run_collector(cve_id: str) -> None:
     try:
         result = await run_collector({"cve_id": cve_id})
         cve_package = result.get("cve_package")
-        if cve_package:
-            console.print_json(cve_package.model_dump_json(indent=2))
+        if cve_package is None:
+            console.print(
+                f"[red]Collector failed to extract CVE data for {cve_id}.[/red]"
+            )
+            for err in result.get("errors", []):
+                console.print(f"  [dim]{err}[/dim]")
+            sys.exit(1)
+        console.print_json(cve_package.model_dump_json(indent=2))
     except Exception as e:
         console.print(f"[red]Collector failed: {e}[/red]")
         sys.exit(1)
@@ -187,13 +222,21 @@ def _show_status() -> None:
     table.add_column("Setting", style="cyan")
     table.add_column("Value", style="green")
 
-    table.add_row("Anthropic API Key", "***" if settings.anthropic_api_key else "[red]NOT SET[/red]")
-    table.add_row("DeepSeek API Key", "***" if settings.deepseek_api_key else "[red]NOT SET[/red]")
-    table.add_row("Google API Key", "***" if settings.google_api_key else "[yellow]optional[/yellow]")
-    table.add_row("NVD API Key", "***" if settings.nvd_api_key else "[yellow]optional[/yellow]")
-    table.add_row("GitHub Token", "***" if settings.github_token else "[yellow]optional[/yellow]")
-    table.add_row("Researcher Swarm", "[green]enabled[/green]" if settings.researcher_swarm_enabled else "[dim]disabled[/dim]")
-    table.add_row("LangSmith Tracing", "[green]enabled[/green]" if settings.langsmith_enabled else "[dim]disabled[/dim]")
+    def _key(value: str, *, optional: bool = False) -> str:
+        if value:
+            return "***"
+        return "[yellow]optional[/yellow]" if optional else "[red]NOT SET[/red]"
+
+    def _toggle(enabled: bool) -> str:
+        return "[green]enabled[/green]" if enabled else "[dim]disabled[/dim]"
+
+    table.add_row("Anthropic API Key", _key(settings.anthropic_api_key))
+    table.add_row("DeepSeek API Key", _key(settings.deepseek_api_key, optional=True))
+    table.add_row("Google API Key", _key(settings.google_api_key, optional=True))
+    table.add_row("NVD API Key", _key(settings.nvd_api_key, optional=True))
+    table.add_row("GitHub Token", _key(settings.github_token, optional=True))
+    table.add_row("Researcher Swarm", _toggle(settings.researcher_swarm_enabled))
+    table.add_row("LangSmith Tracing", _toggle(settings.langsmith_enabled))
     table.add_row("Max Cost/CVE", f"${settings.max_cost_per_cve}")
     table.add_row("Max Monthly Spend", f"${settings.max_monthly_spend}")
     table.add_row("Docker Host", settings.docker_host)

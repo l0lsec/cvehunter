@@ -1,6 +1,6 @@
 """Environment Builder Agent — provisions Docker labs for exploit testing.
 
-LLM Tier: CHEAP (DeepSeek V4 Flash)
+LLM Tier: CHEAP (Claude Haiku 4.5)
 Input: CVEPackage + ExploitRecipe
 Output: EnvironmentSpec
 """
@@ -14,15 +14,17 @@ from typing import Any
 import structlog
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 
-from cvehunter.config import ModelTier
+from cvehunter.config import ModelTier, settings
 from cvehunter.cost_tracker import check_cost_limits
-from cvehunter.llm_router import extract_cost, get_model
+from cvehunter.llm_router import get_model, structured_call
 from cvehunter.schemas import CVEPackage, EnvironmentSpec, ExploitRecipe
 from cvehunter.tools.docker_ops import (
+    _force_internal_networks,
     build_image,
     compose_up,
     health_check,
     insert_flag,
+    inspect_container_running,
     verify_network_isolation,
 )
 
@@ -71,6 +73,24 @@ that realistically hosts the vulnerable application.
 
 Requirements:
 1. Generate a Dockerfile that installs the EXACT vulnerable version of the software
+
+VERSION FIDELITY (most common cause of a non-exploitable lab):
+- The running service MUST report the exact vulnerable version from the CVE, not
+  merely the same major.minor line. A target one patch newer is NOT vulnerable.
+- STRONGLY prefer the official upstream image pinned to the exact vulnerable
+  version, e.g. ``FROM httpd:2.4.49``, ``FROM nginx:1.20.0``, ``FROM
+  php:7.4.21-apache``, ``FROM tomcat:9.0.30``. These pinned tags ARE the
+  vulnerable build.
+- Do NOT install the vulnerable component from a distro package manager
+  (``apt-get install apache2`` / ``yum install httpd`` / ``apk add ...``):
+  distros ship the CURRENT security-patched version (e.g. ``apt install
+  apache2`` on Debian yields a patched 2.4.x), which silently neutralises the
+  CVE. Use distro packages only for unrelated helper tools, never for the
+  vulnerable target itself.
+- NEVER use a floating tag (``:latest``, ``:2.4``, ``:stable``) for the
+  vulnerable component — it resolves to a patched build.
+- If a version-check ``RUN`` is included, assert the EXACT version
+  (``grep "2.4.49"``), not just the major line (``grep "2.4"``).
 2. Generate a docker-compose.yml with all necessary services (web server, database, etc.)
 3. The environment must be REALISTIC — no unnecessary privileges or backdoors
 4. Include only the minimum services needed for the vulnerability to be exploitable
@@ -79,12 +99,35 @@ Requirements:
    - Debug modes or development configurations
    - Exposed management ports
    - Default credentials beyond what the application normally ships with
+6. The lab MUST be network-isolated from the internet. Declare a top-level
+   ``networks:`` section, attach EVERY service to it, and mark every network
+   with ``internal: true``. Do NOT rely on the implicit default network.
+
+Network isolation rules:
+- ``internal: true`` blocks outbound internet (egress) for the lab while still
+  allowing traffic *between* containers on that network. The exploit container
+  is attached to this same network by the harness, so exploit→target traffic
+  and target→exploit callbacks (e.g. a JNDI LDAP/HTTP listener hosted by the
+  exploit for Log4Shell) keep working — only the public internet is cut off.
+- This affects RUNTIME networking only. Image pulls and ``RUN apt-get``/``curl``
+  during the build still have internet, so an internal network never breaks the
+  Dockerfile build.
+- A realistic minimal pattern::
+
+    services:
+      web:
+        build: ...
+        networks: [vuln-net]
+    networks:
+      vuln-net:
+        internal: true
 
 The flag will be inserted separately — just indicate where it should go based
 on the vulnerability type.
 
 Output:
-- ``compose_yaml``: a complete docker-compose.yml.
+- ``compose_yaml``: a complete docker-compose.yml. Every network it declares
+  MUST be ``internal: true`` and every service MUST be attached to one.
 - ``dockerfile_content``: the full Dockerfile content when the compose file
   uses a ``build:`` section referencing ``Dockerfile``. If every service in
   compose uses only pre-built ``image:`` references, ``dockerfile_content``
@@ -193,14 +236,20 @@ def _build_retry_hint(error_text: str) -> str:
             "pre-built image (e.g. maven:*, tomcat:*, gradle:*) so no download "
             "is needed."
         )
-    if "mvn" in low and ("exit code: 127" in low or "mvn: command not found" in low or "mvn: not found" in low):
+    if "mvn" in low and (
+        "exit code: 127" in low or "mvn: command not found" in low or "mvn: not found" in low
+    ):
         hints.append(
             "DETECTED: `mvn` not on PATH. The base image (e.g. eclipse-temurin) "
             "does NOT include Maven. Switch the builder stage to a Maven image: "
             "`FROM maven:3.9-eclipse-temurin-8` (or `-11`/`-17`) — it ships both "
             "the JDK and the Maven CLI. Do NOT install Maven manually with curl."
         )
-    elif "gradle" in low and ("exit code: 127" in low or "gradle: command not found" in low or "gradle: not found" in low):
+    elif "gradle" in low and (
+        "exit code: 127" in low
+        or "gradle: command not found" in low
+        or "gradle: not found" in low
+    ):
         hints.append(
             "DETECTED: `gradle` not on PATH. Use `FROM gradle:8-jdk8` (or matching "
             "JDK) for the builder stage instead of installing Gradle manually."
@@ -249,7 +298,8 @@ async def _retry_compose(
                 f"The Docker build failed with this error:\n{last_error['error']}\n"
                 f"{hint_block}\n"
                 f"Original compose YAML:\n```yaml\n{env_spec.compose_yaml}\n```\n\n"
-                f"Original Dockerfile:\n```dockerfile\n{env_spec.dockerfile_content or '(none provided)'}\n```\n\n"
+                f"Original Dockerfile:\n```dockerfile\n"
+                f"{env_spec.dockerfile_content or '(none provided)'}\n```\n\n"
                 "Fix the issue and call the `compose_up` tool ONCE with the "
                 "corrected `compose_yaml` AND `dockerfile_content` arguments. "
                 "Do not call `build_image` or any other tool — only `compose_up`. "
@@ -268,7 +318,15 @@ async def _retry_compose(
                 tool_fn = {t.name: t for t in builder_tools}.get(tool_call["name"])
                 if tool_fn is None:
                     continue
-                result = await tool_fn.ainvoke(tool_call["args"])
+                # The LLM doesn't know our project_name/name_prefix, so it omits
+                # them — letting compose fall back to the YAML's own ``name:`` or
+                # an empty project. Force them so retried envs use the same
+                # CVE-scoped project (consistent container names + cleanup).
+                call_args = dict(tool_call["args"])
+                if tool_call["name"] == "compose_up":
+                    call_args["project_name"] = project_name
+                    call_args["name_prefix"] = name_prefix
+                result = await tool_fn.ainvoke(call_args)
                 retry_messages.append(
                     ToolMessage(content=str(result), tool_call_id=tool_call["id"])
                 )
@@ -368,27 +426,45 @@ def _strip_host_ports(compose_yaml: str) -> str:
     return yaml.safe_dump(doc, sort_keys=False)
 
 
-def _derive_health_check_command(compose_yaml: str) -> str:
-    """Derive a TCP-level health probe from the first published port in compose.
+def _readiness_probe(port: str) -> str:
+    """A multi-tool 'is this TCP service accepting connections?' command for ``sh -c``.
 
-    Uses ``curl`` exit codes: 0 (success) and 22 (HTTP error) both mean the
-    TCP socket is accepting connections, so the service is up even if it
-    returns 4xx/5xx on ``/``. Exit 7 (couldn't connect) keeps it unhealthy.
+    Containers ship wildly different tooling, and the builder sometimes installs
+    a ``curl`` that is ABI-mismatched with the image's libcurl (``symbol not
+    found``), so a single ``curl`` probe produces false negatives even when the
+    service is up. Try, in order, until one says the socket is open:
+      1. ``curl`` — exit 0 (2xx/3xx) or 22 (4xx/5xx) both mean the socket answered
+      2. ``wget`` — busybox/GNU fallback when curl is missing or broken
+      3. a procfs scan for a socket bound to the port — needs no external binary
+    """
+    return (
+        "sh -c '"
+        f"P={port}; "
+        "curl -s -o /dev/null --max-time 5 http://localhost:$P/ 2>/dev/null && exit 0; "
+        "[ $? -eq 22 ] && exit 0; "
+        "wget -q -O /dev/null http://localhost:$P/ 2>/dev/null && exit 0; "
+        "hx=$(printf %04X $P); "
+        "grep -qi \":$hx \" /proc/net/tcp /proc/net/tcp6 2>/dev/null && exit 0; "
+        "exit 1'"
+    )
+
+
+def _derive_health_check_command(compose_yaml: str) -> str:
+    """Derive a robust readiness probe from the first published port in compose.
+
+    Returns an empty string when no container port can be parsed.
     """
     try:
         import yaml as _yaml
         spec = _yaml.safe_load(compose_yaml) or {}
         services = spec.get("services") or {}
         for svc in services.values():
+            if not isinstance(svc, dict):
+                continue
             for port in svc.get("ports", []) or []:
-                port_str = str(port)
-                container_port = port_str.split(":")[-1].split("/")[0].strip()
+                container_port = str(port).split(":")[-1].split("/")[0].strip()
                 if container_port.isdigit():
-                    return (
-                        f"sh -c 'curl -s -o /dev/null --max-time 5 "
-                        f"http://localhost:{container_port}/; "
-                        f"code=$?; [ $code -eq 0 ] || [ $code -eq 22 ]'"
-                    )
+                    return _readiness_probe(container_port)
     except Exception:
         pass
     return ""
@@ -404,8 +480,18 @@ async def run_builder(state: dict[str, Any]) -> dict[str, Any]:
             "total_cost_usd": state.get("total_cost_usd", 0.0),
         }
 
-    cve_package: CVEPackage = state["cve_package"]
-    recipe: ExploitRecipe = state["exploit_recipe"]
+    # The builder requires both upstream artifacts. The escalated-researcher
+    # path edges unconditionally into the builder, so guard against a research
+    # failure that left no recipe rather than KeyError-ing here.
+    cve_package: CVEPackage | None = state.get("cve_package")
+    recipe: ExploitRecipe | None = state.get("exploit_recipe")
+    if cve_package is None or recipe is None:
+        return {
+            "status": "environment_failed",
+            "errors": state.get("errors", [])
+            + ["Builder skipped: missing CVE package or exploit recipe from upstream"],
+            "total_cost_usd": state.get("total_cost_usd", 0.0),
+        }
     run_cost = state.get("total_cost_usd", 0.0)
     tier = ModelTier.CHEAP
 
@@ -451,9 +537,16 @@ The flag location will be: {flag_location}
         HumanMessage(content=context),
     ]
 
-    structured_llm = llm.with_structured_output(EnvironmentSpec, method="function_calling")
-    env_spec = await structured_llm.ainvoke(messages)
-    run_cost += extract_cost(env_spec, tier) if hasattr(env_spec, "usage_metadata") else 0.0
+    env_spec, call_cost = await structured_call(llm, EnvironmentSpec, messages, tier)
+    run_cost += call_cost
+
+    if env_spec is None:
+        return {
+            "status": "environment_failed",
+            "errors": state.get("errors", [])
+            + [f"Builder could not produce an EnvironmentSpec for {cve_package.cve_id}"],
+            "total_cost_usd": run_cost,
+        }
 
     env_spec.cve_id = cve_package.cve_id
     env_spec.flag_value = flag_value
@@ -486,16 +579,37 @@ The flag location will be: {flag_location}
             "total_cost_usd": run_cost,
         }
 
+    # Persist the isolated form of the compose so the saved artifact matches what
+    # actually ran (compose_up forces internal networks at runtime). This also
+    # propagates the internal flag into the patched env, which is derived from
+    # env_spec.compose_yaml below. Covers both the initial and retry-updated YAML.
+    env_spec.compose_yaml = _force_internal_networks(env_spec.compose_yaml)
+
     env_spec.network_name = compose_result.get(
         "network_name", f"{project_name}_default"
     )
 
     isolation_result = await verify_network_isolation(env_spec.network_name)
     if "error" in isolation_result:
+        if settings.network_isolation_enforced:
+            logger.error(
+                "network_isolation_failed",
+                cve_id=cve_package.cve_id,
+                error=isolation_result.get("error"),
+                enforced=True,
+            )
+            return {
+                "environment": env_spec,
+                "status": "environment_failed",
+                "errors": state.get("errors", [])
+                + [f"Network isolation failed: {isolation_result.get('error')}"],
+                "total_cost_usd": run_cost,
+            }
         logger.warning(
             "network_isolation_failed",
             cve_id=cve_package.cve_id,
             error=isolation_result.get("error"),
+            enforced=False,
         )
         env_spec.errors = env_spec.errors or []
         env_spec.errors.append(f"Network isolation warning: {isolation_result.get('error')}")
@@ -529,16 +643,42 @@ The flag location will be: {flag_location}
     hc_kwargs = {"container_name": container_name}
     if hc_command:
         hc_kwargs["check_command"] = hc_command
+    else:
+        # No port-derived probe and no LLM-supplied command: fall back to the
+        # tool default, but log it so a generic probe can't silently mask a
+        # service that never actually came up.
+        logger.warning(
+            "health_check_command_missing",
+            cve_id=cve_package.cve_id,
+            container=container_name,
+        )
     hc_result = await health_check.ainvoke(hc_kwargs)
     env_spec.health_check_passed = hc_result.get("healthy", False)
 
     if not env_spec.health_check_passed:
-        return {
-            "environment": env_spec,
-            "status": "environment_failed",
-            "errors": [f"Health check failed: {hc_result}"],
-            "total_cost_usd": run_cost,
-        }
+        # A failed probe isn't conclusive — container images ship inconsistent
+        # tooling and the probe binary itself can be broken. If the container is
+        # actually running, proceed and let the exploiter (the real arbiter)
+        # decide; only hard-fail when the container isn't up at all.
+        if await inspect_container_running(container_name):
+            logger.warning(
+                "health_check_inconclusive_but_running",
+                cve_id=cve_package.cve_id,
+                container=container_name,
+                result=hc_result,
+            )
+            env_spec.errors = env_spec.errors or []
+            env_spec.errors.append(
+                f"Health probe inconclusive but container is running; "
+                f"proceeding to exploiter. Probe: {hc_result}"
+            )
+        else:
+            return {
+                "environment": env_spec,
+                "status": "environment_failed",
+                "errors": [f"Health check failed and container not running: {hc_result}"],
+                "total_cost_usd": run_cost,
+            }
 
     if env_spec.patched_image:
         patched_project = f"cvehunter-{cve_slug}-patched-{run_hash}"
