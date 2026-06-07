@@ -142,6 +142,15 @@ async def _run_pipeline(cve_id: str, output_file: str | None) -> None:
             console.print(table)
             console.print(f"\n[bold]Summary:[/bold] {judgement.summary}")
 
+        from cvehunter.config import settings as _settings
+
+        poc_path = _settings.artifact_dir / cve_id / "poc.py"
+        if poc_path.exists():
+            exploit = result.get("exploit_result")
+            captured = bool(getattr(exploit, "flag_captured", False))
+            label = "verified PoC" if captured else "best-attempt PoC"
+            console.print(f"\n[bold]PoC ({label}):[/bold] {poc_path}")
+
         if output_file:
             with open(output_file, "w") as f:
                 json.dump(result, f, indent=2, default=str)
