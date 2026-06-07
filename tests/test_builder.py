@@ -343,3 +343,22 @@ class TestExtractYaml:
 
     def test_no_yaml(self):
         assert _extract_yaml("no yaml here") is None
+
+
+class TestReadinessProbe:
+    def test_derives_multi_tool_probe(self):
+        from cvehunter.agents.builder import _derive_health_check_command
+
+        cmd = _derive_health_check_command(
+            "services:\n  web:\n    image: x\n    ports:\n      - '8080:8080'\n"
+        )
+        # Robust probe: curl, wget, and a procfs fallback that needs no binary.
+        assert "curl" in cmd
+        assert "wget" in cmd
+        assert "/proc/net/tcp" in cmd
+        assert "8080" in cmd
+
+    def test_no_ports_returns_empty(self):
+        from cvehunter.agents.builder import _derive_health_check_command
+
+        assert _derive_health_check_command("services:\n  web:\n    image: x\n") == ""

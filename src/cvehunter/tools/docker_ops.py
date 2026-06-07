@@ -510,6 +510,22 @@ async def tail_container_logs(container_name: str, lines: int = 200) -> str:
         return f"(could not read logs from {container_name}: {e})"
 
 
+async def inspect_container_running(container_name: str) -> bool:
+    """Return True if the named container exists and is in the 'running' state.
+
+    Used as a fallback when the readiness probe is inconclusive: a service that
+    is actually up shouldn't be discarded because an in-container probe binary
+    (e.g. a broken curl) failed.
+    """
+    client = _get_client()
+    try:
+        container = await asyncio.to_thread(client.containers.get, container_name)
+        await asyncio.to_thread(container.reload)
+        return container.status == "running"
+    except Exception:
+        return False
+
+
 async def cleanup_environment(project_name: str) -> dict[str, Any]:
     """Tear down all containers and networks for a single compose project."""
     try:
@@ -536,9 +552,12 @@ async def cleanup_cve_environments(cve_id: str) -> dict[str, Any]:
     cancelled run never reveals its random hash. We instead enumerate compose
     projects via ``docker compose ls`` and down every one whose name belongs to
     this CVE. This is what guarantees no containers/networks leak after a run.
+
+    Matching is by the (globally unique) CVE slug substring rather than only the
+    ``cvehunter-`` prefix, so a project the LLM's compose named itself (e.g.
+    ``cve-2021-41773``) is still torn down.
     """
     cve_slug = cve_id.lower()
-    prefix = f"cvehunter-{cve_slug}"
     try:
         result = await asyncio.to_thread(
             subprocess.run,
@@ -560,7 +579,7 @@ async def cleanup_cve_environments(cve_id: str) -> dict[str, Any]:
             except json.JSONDecodeError:
                 projects = []
 
-        targets = [p for p in projects if p == prefix or p.startswith(prefix + "-")]
+        targets = [p for p in projects if cve_slug in p.lower()]
         for proj in targets:
             await cleanup_environment(proj)
         return tool_success({"status": "cleaned", "cleaned_projects": targets})

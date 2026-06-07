@@ -43,12 +43,17 @@ def _build_model(
     *,
     temperature: float = 0.0,
 ) -> BaseChatModel:
-    """Instantiate a LangChain chat model from a ModelConfig."""
+    """Instantiate a LangChain chat model from a ModelConfig.
+
+    ``temperature`` is forwarded only to providers that still accept it. The
+    current Anthropic models (Haiku 4.5 / Sonnet 4.6 / Opus 4.8) removed the
+    sampling parameter — passing it returns a 400 ("temperature is deprecated
+    for this model"), so it is omitted for the Anthropic branch.
+    """
     if model_config.provider == "anthropic":
         return ChatAnthropic(
             model=model_config.model_name,
             api_key=settings.anthropic_api_key,
-            temperature=temperature,
             max_tokens=8192,
         )
     elif model_config.provider == "deepseek":
@@ -167,12 +172,12 @@ def extract_cost(response: Any, tier: ModelTier) -> float:
     )
 
 
-async def structured_call(
+async def structured_call[SchemaT: BaseModel](
     llm: BaseChatModel,
-    schema: type[BaseModel],
+    schema: type[SchemaT],
     messages: list[BaseMessage],
     tier: ModelTier,
-) -> tuple[BaseModel | None, float]:
+) -> tuple[SchemaT | None, float]:
     """Invoke an LLM for a structured (Pydantic) output and report its cost.
 
     Uses ``with_structured_output(..., include_raw=True)`` so we can read the

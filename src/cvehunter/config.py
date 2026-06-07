@@ -75,6 +75,17 @@ AGENT_MODEL_MAPPING: dict[str, ModelTier] = {
     "judge": ModelTier.CHEAP,
 }
 
+# Per-agent tier overrides via ``<AGENT>_MODEL_TIER`` env vars (value: a ModelTier
+# name like "cheap"/"smart"/"heavy"). The builder is the most fidelity-sensitive
+# agent — constructing a correctly-versioned, correctly-misconfigured vulnerable
+# lab is hard for the cheap tier — so escalating just the builder (e.g.
+# ``BUILDER_MODEL_TIER=smart``) is a common, cost-effective tweak.
+_VALID_TIERS = {tier.value: tier for tier in ModelTier}
+for _agent in list(AGENT_MODEL_MAPPING):
+    _override = os.getenv(f"{_agent.upper()}_MODEL_TIER", "").strip().lower()
+    if _override in _VALID_TIERS:
+        AGENT_MODEL_MAPPING[_agent] = _VALID_TIERS[_override]
+
 
 class Settings(BaseModel):
     """Global application settings."""

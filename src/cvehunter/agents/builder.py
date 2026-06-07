@@ -24,6 +24,7 @@ from cvehunter.tools.docker_ops import (
     compose_up,
     health_check,
     insert_flag,
+    inspect_container_running,
     verify_network_isolation,
 )
 
@@ -72,6 +73,24 @@ that realistically hosts the vulnerable application.
 
 Requirements:
 1. Generate a Dockerfile that installs the EXACT vulnerable version of the software
+
+VERSION FIDELITY (most common cause of a non-exploitable lab):
+- The running service MUST report the exact vulnerable version from the CVE, not
+  merely the same major.minor line. A target one patch newer is NOT vulnerable.
+- STRONGLY prefer the official upstream image pinned to the exact vulnerable
+  version, e.g. ``FROM httpd:2.4.49``, ``FROM nginx:1.20.0``, ``FROM
+  php:7.4.21-apache``, ``FROM tomcat:9.0.30``. These pinned tags ARE the
+  vulnerable build.
+- Do NOT install the vulnerable component from a distro package manager
+  (``apt-get install apache2`` / ``yum install httpd`` / ``apk add ...``):
+  distros ship the CURRENT security-patched version (e.g. ``apt install
+  apache2`` on Debian yields a patched 2.4.x), which silently neutralises the
+  CVE. Use distro packages only for unrelated helper tools, never for the
+  vulnerable target itself.
+- NEVER use a floating tag (``:latest``, ``:2.4``, ``:stable``) for the
+  vulnerable component — it resolves to a patched build.
+- If a version-check ``RUN`` is included, assert the EXACT version
+  (``grep "2.4.49"``), not just the major line (``grep "2.4"``).
 2. Generate a docker-compose.yml with all necessary services (web server, database, etc.)
 3. The environment must be REALISTIC — no unnecessary privileges or backdoors
 4. Include only the minimum services needed for the vulnerability to be exploitable
@@ -299,7 +318,15 @@ async def _retry_compose(
                 tool_fn = {t.name: t for t in builder_tools}.get(tool_call["name"])
                 if tool_fn is None:
                     continue
-                result = await tool_fn.ainvoke(tool_call["args"])
+                # The LLM doesn't know our project_name/name_prefix, so it omits
+                # them — letting compose fall back to the YAML's own ``name:`` or
+                # an empty project. Force them so retried envs use the same
+                # CVE-scoped project (consistent container names + cleanup).
+                call_args = dict(tool_call["args"])
+                if tool_call["name"] == "compose_up":
+                    call_args["project_name"] = project_name
+                    call_args["name_prefix"] = name_prefix
+                result = await tool_fn.ainvoke(call_args)
                 retry_messages.append(
                     ToolMessage(content=str(result), tool_call_id=tool_call["id"])
                 )
@@ -399,27 +426,45 @@ def _strip_host_ports(compose_yaml: str) -> str:
     return yaml.safe_dump(doc, sort_keys=False)
 
 
-def _derive_health_check_command(compose_yaml: str) -> str:
-    """Derive a TCP-level health probe from the first published port in compose.
+def _readiness_probe(port: str) -> str:
+    """A multi-tool 'is this TCP service accepting connections?' command for ``sh -c``.
 
-    Uses ``curl`` exit codes: 0 (success) and 22 (HTTP error) both mean the
-    TCP socket is accepting connections, so the service is up even if it
-    returns 4xx/5xx on ``/``. Exit 7 (couldn't connect) keeps it unhealthy.
+    Containers ship wildly different tooling, and the builder sometimes installs
+    a ``curl`` that is ABI-mismatched with the image's libcurl (``symbol not
+    found``), so a single ``curl`` probe produces false negatives even when the
+    service is up. Try, in order, until one says the socket is open:
+      1. ``curl`` — exit 0 (2xx/3xx) or 22 (4xx/5xx) both mean the socket answered
+      2. ``wget`` — busybox/GNU fallback when curl is missing or broken
+      3. a procfs scan for a socket bound to the port — needs no external binary
+    """
+    return (
+        "sh -c '"
+        f"P={port}; "
+        "curl -s -o /dev/null --max-time 5 http://localhost:$P/ 2>/dev/null && exit 0; "
+        "[ $? -eq 22 ] && exit 0; "
+        "wget -q -O /dev/null http://localhost:$P/ 2>/dev/null && exit 0; "
+        "hx=$(printf %04X $P); "
+        "grep -qi \":$hx \" /proc/net/tcp /proc/net/tcp6 2>/dev/null && exit 0; "
+        "exit 1'"
+    )
+
+
+def _derive_health_check_command(compose_yaml: str) -> str:
+    """Derive a robust readiness probe from the first published port in compose.
+
+    Returns an empty string when no container port can be parsed.
     """
     try:
         import yaml as _yaml
         spec = _yaml.safe_load(compose_yaml) or {}
         services = spec.get("services") or {}
         for svc in services.values():
+            if not isinstance(svc, dict):
+                continue
             for port in svc.get("ports", []) or []:
-                port_str = str(port)
-                container_port = port_str.split(":")[-1].split("/")[0].strip()
+                container_port = str(port).split(":")[-1].split("/")[0].strip()
                 if container_port.isdigit():
-                    return (
-                        f"sh -c 'curl -s -o /dev/null --max-time 5 "
-                        f"http://localhost:{container_port}/; "
-                        f"code=$?; [ $code -eq 0 ] || [ $code -eq 22 ]'"
-                    )
+                    return _readiness_probe(container_port)
     except Exception:
         pass
     return ""
@@ -611,12 +656,29 @@ The flag location will be: {flag_location}
     env_spec.health_check_passed = hc_result.get("healthy", False)
 
     if not env_spec.health_check_passed:
-        return {
-            "environment": env_spec,
-            "status": "environment_failed",
-            "errors": [f"Health check failed: {hc_result}"],
-            "total_cost_usd": run_cost,
-        }
+        # A failed probe isn't conclusive — container images ship inconsistent
+        # tooling and the probe binary itself can be broken. If the container is
+        # actually running, proceed and let the exploiter (the real arbiter)
+        # decide; only hard-fail when the container isn't up at all.
+        if await inspect_container_running(container_name):
+            logger.warning(
+                "health_check_inconclusive_but_running",
+                cve_id=cve_package.cve_id,
+                container=container_name,
+                result=hc_result,
+            )
+            env_spec.errors = env_spec.errors or []
+            env_spec.errors.append(
+                f"Health probe inconclusive but container is running; "
+                f"proceeding to exploiter. Probe: {hc_result}"
+            )
+        else:
+            return {
+                "environment": env_spec,
+                "status": "environment_failed",
+                "errors": [f"Health check failed and container not running: {hc_result}"],
+                "total_cost_usd": run_cost,
+            }
 
     if env_spec.patched_image:
         patched_project = f"cvehunter-{cve_slug}-patched-{run_hash}"

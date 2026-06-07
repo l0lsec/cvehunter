@@ -121,6 +121,17 @@ async def test_execute_run_judged_maps_to_completed():
     assert captured["completed_at"]
 
 
+def test_anthropic_model_omits_temperature(monkeypatch):
+    """Newer Anthropic models 400 on `temperature`; _build_model must not send it."""
+    from cvehunter import llm_router
+    from cvehunter.config import MODELS, ModelTier
+
+    monkeypatch.setattr(llm_router.settings, "anthropic_api_key", "sk-ant-test")
+    for tier in (ModelTier.CHEAP, ModelTier.SMART, ModelTier.HEAVY):
+        model = llm_router._build_model(MODELS[tier], temperature=0.0)
+        assert getattr(model, "temperature", None) is None, tier
+
+
 def test_map_terminal_status():
     from cvehunter.api.run_service import _map_terminal_status
 
