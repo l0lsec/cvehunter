@@ -128,6 +128,8 @@ class Settings(BaseModel):
     artifact_dir: Path = Field(
         default_factory=lambda: Path(os.getenv("ARTIFACT_DIR", "./artifacts"))
     )
+    # Flat collection of generated PoCs, one file per CVE (``pocs/<CVE>.py``).
+    pocs_dir: Path = Field(default_factory=lambda: Path(os.getenv("POCS_DIR", "./pocs")))
     database_url: str = Field(
         default_factory=lambda: os.getenv("DATABASE_URL", "sqlite:///./cvehunter.db")
     )

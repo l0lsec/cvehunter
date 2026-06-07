@@ -144,7 +144,7 @@ async def _run_pipeline(cve_id: str, output_file: str | None) -> None:
 
         from cvehunter.config import settings as _settings
 
-        poc_path = _settings.artifact_dir / cve_id / "poc.py"
+        poc_path = _settings.pocs_dir / f"{cve_id}.py"
         if poc_path.exists():
             exploit = result.get("exploit_result")
             captured = bool(getattr(exploit, "flag_captured", False))

@@ -23,6 +23,7 @@ env/
 
 # CVEHunter artifacts
 artifacts/
+pocs/
 *.db
 cvehunter.db
 

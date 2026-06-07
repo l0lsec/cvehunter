@@ -56,6 +56,7 @@ def _write_poc(out_dir: Path, cve_id: str, state: dict[str, Any]) -> Path | None
         if captured
         else "no — best generated attempt; adapt as needed"
     )
+    poc_name = f"{cve_id}.py"
     header = "\n".join(
         [
             "#!/usr/bin/env python3",
@@ -70,8 +71,8 @@ def _write_poc(out_dir: Path, cve_id: str, state: dict[str, Any]) -> Path | None
             "#   Point it at your lab via TARGET_HOST / TARGET_PORT env vars or argv if",
             "#   the script reads them, otherwise edit the target near the top. The target",
             "#   must be the vulnerable build for this CVE.",
-            "#     python poc.py",
-            "#     TARGET_HOST=10.0.0.5 TARGET_PORT=8080 python poc.py",
+            f"#     python pocs/{poc_name} <host> <port>",
+            f"#     TARGET_HOST=10.0.0.5 TARGET_PORT=8080 python pocs/{poc_name}",
             "#",
             "",
             "",
@@ -80,9 +81,15 @@ def _write_poc(out_dir: Path, cve_id: str, state: dict[str, Any]) -> Path | None
     body = code.lstrip("\n")
     if body.startswith("#!"):  # drop the generated script's own shebang
         body = body.split("\n", 1)[1] if "\n" in body else ""
+    poc_text = header + body
 
-    poc_path = out_dir / "poc.py"
-    poc_path.write_text(header + body)
+    # Keep a copy inside the per-run artifact bundle...
+    (out_dir / "poc.py").write_text(poc_text)
+    # ...and drop the headline deliverable into the flat pocs/<CVE>.py collection.
+    pocs_dir = settings.pocs_dir
+    pocs_dir.mkdir(parents=True, exist_ok=True)
+    poc_path = pocs_dir / poc_name
+    poc_path.write_text(poc_text)
     return poc_path
 
 
